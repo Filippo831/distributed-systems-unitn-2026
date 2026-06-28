@@ -28,6 +28,10 @@ public class Client extends AbstractClient {
         sendWrite(_msg.replica, _msg.index, _msg.value);
     }
 
+    private final void handleReadRequest(AbstractClient.ReadRequest _msg) throws Exception {
+        sendRead(_msg.replica, _msg.index);
+    }
+
     @Override
     public void sendRead(ActorRef replica, int index) {
         // create a message type ReadRequest and forward it to the replica
@@ -46,6 +50,7 @@ public class Client extends AbstractClient {
     public final Receive createReceive() {
         return createBaseReceiveBuilder()
                 // TODO add your message handlers here .match(, )
+                .match(AbstractClient.ReadRequest.class, this::handleReadRequest)
                 .match(AbstractClient.WriteRequest.class, this::handleWriteRequest)
                 .build();
     }
