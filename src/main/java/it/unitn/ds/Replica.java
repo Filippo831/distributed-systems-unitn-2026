@@ -8,7 +8,8 @@ import java.util.Optional;
 public class Replica extends AbstractReplica {
 
     public Replica(int id) {
-        this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL, Optional.empty());
+        this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL,
+                Optional.empty());
     }
 
     public Replica(int id, int minLatency, int maxLatency, int coordinatorBeatInterval, Optional<ActorRef> listener) {
@@ -17,12 +18,15 @@ public class Replica extends AbstractReplica {
     }
 
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
-        return Props.create(Replica.class, () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval, Optional.empty()));
+        return Props.create(Replica.class,
+                () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval, Optional.empty()));
     }
 
     // Props method for automated tests
-    public static Props propsWithListener(int id, int minLatency, int maxLatency, int coordinatorBeatInterval, ActorRef listener) {
-        return Props.create(Replica.class, () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval, Optional.ofNullable(listener)));
+    public static Props propsWithListener(int id, int minLatency, int maxLatency, int coordinatorBeatInterval,
+            ActorRef listener) {
+        return Props.create(Replica.class,
+                () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval, Optional.ofNullable(listener)));
     }
 
     @Override
@@ -44,7 +48,10 @@ public class Replica extends AbstractReplica {
     @Override
     public final Receive createReceive() {
         return createBaseReceiveBuilder()
-                // TODO add your message handlers here .match(, )
+                // TODO: add your message handlers here .match(, )
+                .match(Messages.UpdateRequest.class, msg -> {
+                    System.out.println("received UpdateRequest from client");
+                })
                 .build();
     }
 
