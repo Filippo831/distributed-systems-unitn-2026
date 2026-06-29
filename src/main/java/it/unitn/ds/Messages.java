@@ -5,22 +5,22 @@ import java.io.Serializable;
 import akka.actor.ActorRef;
 
 public class Messages {
-    public static class Clock{
-        public final int epoch;
-        public final int seqNum;
+    public static class NodeClock {
+        public int epoch;
+        public int seqNum;
 
-        public Clock(int _epoch, int _seqNum) {
+        public NodeClock(int _epoch, int _seqNum) {
             epoch = _epoch;
             seqNum = _seqNum;
         }
 
         // check if this UpdateId is newer than the other UpdateId, first compare the
         // epoch, if they are equal compare the id
-        public boolean isNewerThan(Clock other) {
-            if (this.epoch != other.epoch) {
-                return this.epoch > other.epoch;
+        public boolean isNewerThan(NodeClock _other) {
+            if (this.epoch != _other.epoch) {
+                return this.epoch > _other.epoch;
             }
-            return this.seqNum > other.seqNum;
+            return this.seqNum > _other.seqNum;
         }
 
         public void incrementSeqNum() {
@@ -60,23 +60,31 @@ public class Messages {
         }
     }
 
-
     public static class Update implements Serializable {
         public final int index;
         public final int value;
 
-        public final Clock clock ;
+        public final NodeClock clock;
 
-        public Update(int _index, int _value, Clock _clock) {
+        public Update(int _index, int _value, NodeClock _clock) {
             index = _index;
             value = _value;
             clock = _clock;
         }
     }
-    public static class Ack implements Serializable {
-        public final Clock clock;
 
-        public Update(Clock _clock) {
+    public static class Ack implements Serializable {
+        public NodeClock clock;
+
+        public Ack(NodeClock _clock) {
+            clock = _clock;
+        }
+    }
+
+    public static class WriteOk implements Serializable {
+        public NodeClock clock;
+
+        public WriteOk(NodeClock _clock) {
             clock = _clock;
         }
     }

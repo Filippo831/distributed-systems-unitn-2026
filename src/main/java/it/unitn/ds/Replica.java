@@ -14,6 +14,7 @@ public class Replica extends AbstractReplica {
     private int epoch;
     private int seqNum;
 
+    private HashMap<Messages.NodeClock, Integer> ackCounters;
 
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL,
@@ -22,11 +23,13 @@ public class Replica extends AbstractReplica {
 
     public Replica(int id, int minLatency, int maxLatency, int coordinatorBeatInterval, Optional<ActorRef> listener) {
         super(id, minLatency, maxLatency, coordinatorBeatInterval, listener);
-        // TODO: implement
         this.group = new HashMap<>();
         this.coordinatorId = -1;
         this.epoch = 0;
         this.seqNum = 0;
+        this.ackCounters = new HashMap<>();
+
+        // TODO: add all the initialization code you need here
     }
 
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
@@ -46,25 +49,50 @@ public class Replica extends AbstractReplica {
         if (this.id == coordinatorId) {
             // if is the coordinator who received the updateRequest, send an UPDATE to the
             // replicas
-            System.out.println("I am the coordinator, sending UPDATE to replicas");
             for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
                 if (entry.getKey() != this.id) {
-                    entry.getValue().tell(new Messages.Update(msg.index, msg.value, Clock(this.epoch, this.seqNum)),
-                            getSelf());
+                    entry.getValue()
+                            .tell(new Messages.Update(_msg.index, _msg.value,
+                                    new Messages.NodeClock(this.epoch, this.seqNum)),
+                                    getSelf());
                 }
             }
+        } else {
+            // if not the coordinator, forward to the coordinator
+            group.get(coordinatorId).tell(_msg, getSelf());
         }
-        // TODO: if not the coordinator, forward to the coordinator
         // TODO: handle timeout (I guess)
     }
 
-    private final void handleUpdateRequest(Messages.Update _msg) throws Exception {
-        // TODO: update internal state with the new values
-        
-        // TODO: send ACK back to the coordinator
-        group.get(coordinatorId).tell(new Messages.Ack(_msg.clock.incrementSeqNum()), getSelf());
-            
+    private final void handleUpdate(Messages.Update _msg) throws Exception {
+        // send ACK back to the coordinator
+        _msg.clock.incrementSeqNum();
+        group.get(coordinatorId).tell(new Messages.Ack(_msg.clock), getSelf());
+
         // TODO: handle timeout (I guess)
+    }
+
+    private final void handleAck(Messages.Ack _msg) throws Exception {
+        // incerment number of received ack for the _msg.NodeClock
+        this.ackCounters.putIfAbsent(_msg.clock, 1);
+        this.ackCounters.put(_msg.clock, this.ackCounters.get(_msg.clock) + 1);
+
+        // if number of ack received > (N/2 + 1) [quorum]
+        if (this.ackCounters.get(_msg.clock) > (Math.floor(group.size() / 2) + 1)) {
+            // send the writeOk to all the others
+            _msg.clock.incrementSeqNum();
+            for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
+                if (entry.getKey() != this.id) {
+                    entry.getValue().tell(new Messages.WriteOk(_msg.clock), getSelf());
+                }
+            }
+        }
+
+        // TODO: handle timeout (I guess)
+    }
+
+    private final void handleWriteOk(Messages.WriteOk _msg) throws Exception {
+        // TODO: update internal state with the new values
     }
 
     @Override
@@ -92,6 +120,8 @@ public class Replica extends AbstractReplica {
                 .match(AbstractReplica.InitSystem.class, this::initSystem)
                 .match(Messages.UpdateRequest.class, this::handleUpdateRequest)
                 .match(Messages.Update.class, this::handleUpdate)
+                .match(Messages.Ack.class, this::handleAck)
+                .match(Messages.WriteOk.class, this::handleWriteOk)
                 .build();
     }
 
