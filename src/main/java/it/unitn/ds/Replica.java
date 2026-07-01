@@ -6,6 +6,7 @@ import akka.actor.Props;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
 
 public class Replica extends AbstractReplica {
     private Map<Integer, ActorRef> group;
@@ -13,8 +14,14 @@ public class Replica extends AbstractReplica {
 
     private int epoch;
     private int seqNum;
-
     private HashMap<Messages.NodeClock, Integer> ackCounters;
+
+    // TODO: create a storage systems with pending updates
+    private Map<Messages.NodeClock, Messages.UpdateData> commitHistory;
+    private int[] storage = new int[POSITIONS_LIST_LENGTH];
+
+    private Messages.NodeClock pendingUpdateClock;
+    private Messages.UpdateData pendingUpdateData;
 
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL,
@@ -23,13 +30,20 @@ public class Replica extends AbstractReplica {
 
     public Replica(int id, int minLatency, int maxLatency, int coordinatorBeatInterval, Optional<ActorRef> listener) {
         super(id, minLatency, maxLatency, coordinatorBeatInterval, listener);
-        this.group = new HashMap<>();
-        this.coordinatorId = -1;
-        this.epoch = 0;
-        this.seqNum = 0;
-        this.ackCounters = new HashMap<>();
 
         // TODO: add all the initialization code you need here
+        this.group = new HashMap<>();
+        this.coordinatorId = -1;
+
+        this.epoch = 0;
+        this.seqNum = 0;
+
+        this.ackCounters = new HashMap<>();
+        this.commitHistory = new TreeMap<>();
+
+        this.pendingUpdateClock = null;
+        this.pendingUpdateData = null;
+
     }
 
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
@@ -65,6 +79,9 @@ public class Replica extends AbstractReplica {
     }
 
     private final void handleUpdate(Messages.Update _msg) throws Exception {
+        this.pendingUpdateClock = _msg.clock;
+        this.pendingUpdateData = new Messages.UpdateData(_msg.index, _msg.value);
+
         // send ACK back to the coordinator
         _msg.clock.incrementSeqNum();
         group.get(coordinatorId).tell(new Messages.Ack(_msg.clock), getSelf());
@@ -92,7 +109,17 @@ public class Replica extends AbstractReplica {
     }
 
     private final void handleWriteOk(Messages.WriteOk _msg) throws Exception {
-        // TODO: update internal state with the new values
+        // update internal state with the new values
+        if (pendingUpdateClock != null && pendingUpdateClock.equals(_msg.clock)) {
+            commitHistory.put(pendingUpdateClock, pendingUpdateData);
+            storage[pendingUpdateData.index] = pendingUpdateData.value;
+
+            // trigger the testing functions
+            callbackOnUpdateApplied(pendingUpdateData.index, pendingUpdateData.value);
+
+            pendingUpdateClock = null;
+            pendingUpdateData = null;
+        }
     }
 
     @Override

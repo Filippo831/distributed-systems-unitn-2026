@@ -5,6 +5,18 @@ import java.io.Serializable;
 import akka.actor.ActorRef;
 
 public class Messages {
+    // TODO: probabily this isn't the best place to declare this class, see if there
+    // are better options
+    public static class UpdateData {
+        public final int index;
+        public final int value;
+
+        public UpdateData(int _index, int _value) {
+            index = _index;
+            value = _value;
+        }
+    }
+
     public static class NodeClock {
         public int epoch;
         public int seqNum;
@@ -21,6 +33,10 @@ public class Messages {
                 return this.epoch > _other.epoch;
             }
             return this.seqNum > _other.seqNum;
+        }
+
+        public boolean equals(NodeClock _other) {
+            return (this.epoch == _other.epoch) && (this.seqNum == _other.seqNum);
         }
 
         public void incrementSeqNum() {
@@ -73,6 +89,7 @@ public class Messages {
         }
     }
 
+    // TODO: check if the sender id is needed to avoid duplicates
     public static class Ack implements Serializable {
         public NodeClock clock;
 

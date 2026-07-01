@@ -1,0 +1,8 @@
+Clock
+- now the clock is incremented only by a replica every time it receives a request from some of the clients.
+- The internal message exchanges between the replica do not increase the clock value.
+
+2PC
+- The coordinator sends an update message to all the replicas with the clock value.
+- It adds the entry in a map where the key is the clock and the value the amount of ACK received.
+- When it receives more than half ACK it sends back WRITEOK with the clock stored in the HashMap as key
