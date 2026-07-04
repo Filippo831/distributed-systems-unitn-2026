@@ -12,8 +12,7 @@ public class Replica extends AbstractReplica {
     private Map<Integer, ActorRef> group;
     private int coordinatorId;
 
-    private int epoch;
-    private int seqNum;
+    private Messages.NodeClock clock;
     private HashMap<Messages.NodeClock, Integer> ackCounters;
 
     // TODO: create a storage systems with pending updates
@@ -22,6 +21,9 @@ public class Replica extends AbstractReplica {
 
     private Messages.NodeClock pendingUpdateClock;
     private Messages.UpdateData pendingUpdateData;
+
+    private Map<ActorRef, Messages.NodeClock> myClients = new HashMap<>();
+    private Map<Messages.NodeClock, ActorRef> updateClients = new HashMap<>();
 
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL,
@@ -35,9 +37,7 @@ public class Replica extends AbstractReplica {
         this.group = new HashMap<>();
         this.coordinatorId = -1;
 
-        this.epoch = 0;
-        this.seqNum = 0;
-
+        this.clock = new Messages.NodeClock(0, 0);
         this.ackCounters = new HashMap<>();
         this.commitHistory = new TreeMap<>();
 
@@ -62,20 +62,28 @@ public class Replica extends AbstractReplica {
         debug("Received UPDATE_REQUEST from client " + getSender().path().name() + " for index: " + _msg.index
                 + " and value: " + _msg.value);
         if (this.id == coordinatorId) {
-            this.seqNum++;
+            // THIS IS THE COORDINATOR
+            // - forward to other replicas UPDATE MESSAGE
+            // - save client in myClients and updateClients with current clock
+            this.clock.incrementSeqNum();
             // if is the coordinator who received the updateRequest, send an UPDATE to the
             // replicas
             for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
                 if (entry.getKey() != this.id) {
                     entry.getValue()
                             .tell(new Messages.Update(_msg.index, _msg.value,
-                                    new Messages.NodeClock(this.epoch, this.seqNum)),
-                                    getSelf());
+                                    this.clock, getSelf()), getSelf());
                 }
             }
+            updateClients.put(this.clock, _msg.client);
+            myClients.put(_msg.client, this.clock);
         } else {
-            // if not the coordinator, forward to the coordinator
+            // THIS IS NOT THE COORDINATOR
+            // - forward the request to the coordinator
+            // - add client to the list of clients without clock
             group.get(coordinatorId).tell(_msg, getSelf());
+
+            myClients.put(_msg.client, null);
         }
         // TODO: handle timeout (I guess)
     }
@@ -84,6 +92,12 @@ public class Replica extends AbstractReplica {
         debug("Received UPDATE from coordinator " + getSender().path().name() + " for clock: " + _msg.clock.toString());
         this.pendingUpdateClock = _msg.clock;
         this.pendingUpdateData = new Messages.UpdateData(_msg.index, _msg.value);
+
+        updateClients.put(this.clock, _msg.client);
+
+        if (myClients.containsKey(_msg.client) && myClients.get(_msg.client) == null) {
+            myClients.put(_msg.client, this.clock);
+        }
 
         // send ACK back to the coordinator
         group.get(coordinatorId).tell(new Messages.Ack(_msg.clock), getSelf());
@@ -125,12 +139,22 @@ public class Replica extends AbstractReplica {
             pendingUpdateClock = null;
             pendingUpdateData = null;
         }
+        ActorRef client = updateClients.remove(clock);
+
+        if (client != null) {
+            Messages.NodeClock expectedClock = myClients.get(client);
+            if (expectedClock != null && expectedClock.equals(clock)) {
+                Messages.UpdateData data = this.commitHistory.get(clock);
+                tell(new AbstractClient.WriteResult(true, data.index, data.value, this.id), client);
+                myClients.remove(client); // Clean up
+            }
+        }
     }
 
     private final void handleReadRequest(Messages.ReadRequest _msg) {
-        this.seqNum++;
+        this.clock.incrementSeqNum();
         int value = storage[_msg.index];
-        _msg.client.tell(new Messages.ReadResponse(_msg.index, value, this.id), getSelf()); 
+        _msg.client.tell(new Messages.ReadResponse(_msg.index, value, this.id), getSelf());
     }
 
     @Override

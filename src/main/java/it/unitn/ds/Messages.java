@@ -114,11 +114,13 @@ public class Messages {
         public final int value;
 
         public final NodeClock clock;
+        public final ActorRef client;
 
-        public Update(int _index, int _value, NodeClock _clock) {
+        public Update(int _index, int _value, NodeClock _clock, ActorRef _client) {
             index = _index;
             value = _value;
             clock = _clock;
+            client = _client;
         }
     }
 
