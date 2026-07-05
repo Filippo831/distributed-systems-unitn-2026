@@ -13,6 +13,8 @@ public class Replica extends AbstractReplica {
     private int coordinatorId;
 
     private Messages.NodeClock clock;
+    private int epoch;
+    private int seqNum;
     private HashMap<Messages.NodeClock, Integer> ackCounters;
 
     // TODO: create a storage systems with pending updates
@@ -37,7 +39,9 @@ public class Replica extends AbstractReplica {
         this.group = new HashMap<>();
         this.coordinatorId = -1;
 
-        this.clock = new Messages.NodeClock(0, 0);
+        this.epoch = 0;
+        this.seqNum = 0;
+
         this.ackCounters = new HashMap<>();
         this.commitHistory = new TreeMap<>();
 
@@ -65,18 +69,20 @@ public class Replica extends AbstractReplica {
             // THIS IS THE COORDINATOR
             // - forward to other replicas UPDATE MESSAGE
             // - save client in myClients and updateClients with current clock
-            this.clock.incrementSeqNum();
+            
+            this.seqNum++;
             // if is the coordinator who received the updateRequest, send an UPDATE to the
             // replicas
             for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
                 if (entry.getKey() != this.id) {
                     entry.getValue()
                             .tell(new Messages.Update(_msg.index, _msg.value,
-                                    this.clock, getSelf()), getSelf());
+                                    new Messages.NodeClock(this.epoch, this.seqNum), _msg.client),
+                                    getSelf());
                 }
             }
-            updateClients.put(this.clock, _msg.client);
-            myClients.put(_msg.client, this.clock);
+            updateClients.put(new Messages.NodeClock(this.epoch, this.seqNum), _msg.client);
+            myClients.put(_msg.client, new Messages.NodeClock(this.epoch, this.seqNum));
         } else {
             // THIS IS NOT THE COORDINATOR
             // - forward the request to the coordinator
@@ -93,10 +99,10 @@ public class Replica extends AbstractReplica {
         this.pendingUpdateClock = _msg.clock;
         this.pendingUpdateData = new Messages.UpdateData(_msg.index, _msg.value);
 
-        updateClients.put(this.clock, _msg.client);
+        updateClients.put(_msg.clock, _msg.client);
 
         if (myClients.containsKey(_msg.client) && myClients.get(_msg.client) == null) {
-            myClients.put(_msg.client, this.clock);
+            myClients.put(_msg.client, new Messages.NodeClock(this.epoch, this.seqNum));
         }
 
         // send ACK back to the coordinator
@@ -113,14 +119,26 @@ public class Replica extends AbstractReplica {
         // print the ackCounters for debug purposes
         debug("Ack counters: " + this.ackCounters.toString());
 
-        // if number of ack received > (N/2 + 1) [quorum]
-        if (this.ackCounters.get(_msg.clock) > (Math.floor(group.size() / 2) + 1)) {
+        // if number of ack received >= (N/2 + 1) [quorum]
+        if (this.ackCounters.get(_msg.clock) >= (Math.floor(group.size() / 2) + 1)) {
+            // apply the changes to local storage
             // send the writeOk to all the others
             for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
                 if (entry.getKey() != this.id) {
                     entry.getValue().tell(new Messages.WriteOk(_msg.clock), getSelf());
                 }
             }
+            ActorRef client = updateClients.remove(_msg.clock);
+            if (client != null) {
+                Messages.NodeClock expectedClock = myClients.get(client);
+                if (expectedClock != null && expectedClock.equals(_msg.clock)) {
+                    Messages.UpdateData clientData = commitHistory.get(_msg.clock);
+                    tell(new AbstractClient.WriteResult(true, clientData.index, clientData.value, this.id), client);
+                    myClients.remove(client);
+                }
+            }
+
+            this.ackCounters.remove(_msg.clock);
         }
 
         // TODO: handle timeout (I guess)
@@ -139,12 +157,12 @@ public class Replica extends AbstractReplica {
             pendingUpdateClock = null;
             pendingUpdateData = null;
         }
-        ActorRef client = updateClients.remove(clock);
+        ActorRef client = updateClients.remove(_msg.clock);
 
         if (client != null) {
             Messages.NodeClock expectedClock = myClients.get(client);
             if (expectedClock != null && expectedClock.equals(clock)) {
-                Messages.UpdateData data = this.commitHistory.get(clock);
+                Messages.UpdateData data = commitHistory.get(clock);
                 tell(new AbstractClient.WriteResult(true, data.index, data.value, this.id), client);
                 myClients.remove(client); // Clean up
             }
@@ -152,9 +170,10 @@ public class Replica extends AbstractReplica {
     }
 
     private final void handleReadRequest(Messages.ReadRequest _msg) {
-        this.clock.incrementSeqNum();
         int value = storage[_msg.index];
-        _msg.client.tell(new Messages.ReadResponse(_msg.index, value, this.id), getSelf());
+        // _msg.client.tell(new Messages.ReadResponse(_msg.index, value, this.id),
+        // getSelf());
+        tell(new AbstractClient.ReadResult(true, _msg.index, value, this.id), _msg.client);
     }
 
     @Override
@@ -172,6 +191,7 @@ public class Replica extends AbstractReplica {
         // TODO: implement
         this.group = sysInit.group;
         this.coordinatorId = sysInit.coordinator_id;
+        // TODO: Start heartbeat scheduler if I am the coordinator
     }
 
     @Override
