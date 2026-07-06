@@ -73,14 +73,16 @@ public class Messages {
     public static class UpdateRequest implements Serializable {
         public final int index;
         public final int value;
+        public final boolean fromReplica;
 
         // keep track on who sent the message
         public final ActorRef client;
 
-        public UpdateRequest(int _index, int _value, ActorRef _client) {
+        public UpdateRequest(int _index, int _value, ActorRef _client, boolean _fromReplica) {
             index = _index;
             value = _value;
             client = _client;
+            fromReplica = _fromReplica;
         }
     }
 
@@ -94,6 +96,7 @@ public class Messages {
             index = _index;
             client = _client;
         }
+
     }
 
     public static class ReadResponse implements Serializable {

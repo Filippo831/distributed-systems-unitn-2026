@@ -16,7 +16,7 @@ public class Main {
         System.out.println("========================================\n");
 
         final int N_REPLICAS = 4;
-        final int COORDINATOR_ID = 0;
+        final int COORDINATOR_ID = 1;
         final ActorSystem system = ActorSystem.create("TestMain");
 
         Logger.setDestinationStdout();
@@ -49,7 +49,7 @@ public class Main {
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
-        testClient.tell(new AbstractClient.ReadRequest(1, replicas.get(1)), ActorRef.noSender());
+        testClient.tell(new AbstractClient.ReadRequest(1, replicas.get(0)), ActorRef.noSender());
 
 
         system.terminate();

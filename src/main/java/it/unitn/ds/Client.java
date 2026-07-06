@@ -51,7 +51,7 @@ public class Client extends AbstractClient {
     @Override
     public void sendWrite(ActorRef replica, int index, int value) {
         // create a message type UpdateRequest and forward it to the replica
-        Messages.UpdateRequest message = new Messages.UpdateRequest(index, value, getSelf());
+        Messages.UpdateRequest message = new Messages.UpdateRequest(index, value, getSelf(), false);
         replica.tell(message, getSelf());
     }
 

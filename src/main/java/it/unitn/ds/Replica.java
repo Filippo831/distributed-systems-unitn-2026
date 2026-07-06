@@ -12,7 +12,6 @@ public class Replica extends AbstractReplica {
     private Map<Integer, ActorRef> group;
     private int coordinatorId;
 
-    private Messages.NodeClock clock;
     private int epoch;
     private int seqNum;
     private HashMap<Messages.NodeClock, Integer> ackCounters;
@@ -65,9 +64,8 @@ public class Replica extends AbstractReplica {
     }
 
     private final void handleUpdateRequest(Messages.UpdateRequest _msg) throws Exception {
-        debug("Received UPDATE_REQUEST from client " + getSender().path().name() + " for index: " + _msg.index
-                + " and value: " + _msg.value);
         if (this.id == coordinatorId) {
+            debug("Replica " + this.id + " is the coordinator and received UpdateRequest from client " + _msg.client);
             // THIS IS THE COORDINATOR
             // - forward to other replicas UPDATE MESSAGE
             // - save client in myClients and updateClients with current clock
@@ -76,10 +74,15 @@ public class Replica extends AbstractReplica {
             this.seqNum++;
             Messages.NodeClock updateClock = new Messages.NodeClock(this.epoch, this.seqNum);
             Messages.UpdateData updateData = new Messages.UpdateData(_msg.index, _msg.value);
+
+            // save the value of the update to later make it persistent for coordinator
             this.coordinatorProposals.put(updateClock, updateData);
 
             updateClients.put(new Messages.NodeClock(this.epoch, this.seqNum), _msg.client);
-            myClients.put(_msg.client, new Messages.NodeClock(this.epoch, this.seqNum));
+
+            if (!_msg.fromReplica) {
+                myClients.put(_msg.client, new Messages.NodeClock(this.epoch, this.seqNum));
+            }
 
             this.ackCounters.put(updateClock, 1);
 
@@ -97,7 +100,10 @@ public class Replica extends AbstractReplica {
             // THIS IS NOT THE COORDINATOR
             // - forward the request to the coordinator
             // - add client to the list of clients without clock
-            group.get(coordinatorId).tell(_msg, getSelf());
+            debug("Replica " + this.id + " forwarding UpdateRequest to coordinator " + coordinatorId);
+            Messages.UpdateRequest forwardMsg = new Messages.UpdateRequest(_msg.index, _msg.value,
+                    _msg.client, true);
+            group.get(coordinatorId).tell(forwardMsg, getSelf());
 
             myClients.put(_msg.client, null);
         }
@@ -105,7 +111,6 @@ public class Replica extends AbstractReplica {
     }
 
     private final void handleUpdate(Messages.Update _msg) throws Exception {
-        debug("Received UPDATE from coordinator " + getSender().path().name() + " for clock: " + _msg.clock.toString());
         this.pendingUpdateClock = _msg.clock;
         this.pendingUpdateData = new Messages.UpdateData(_msg.index, _msg.value);
 
@@ -122,28 +127,25 @@ public class Replica extends AbstractReplica {
     }
 
     private final void handleAck(Messages.Ack _msg) throws Exception {
-        debug("Received ACK from replica " + getSender().path().name() + " for clock: " + _msg.clock.toString());
         // incerment number of received ack for the _msg.NodeClock
         int currentCount = this.ackCounters.getOrDefault(_msg.clock, 0);
         currentCount++;
         this.ackCounters.put(_msg.clock, currentCount);
         // print the ackCounters for debug purposes
-        debug("Ack counters: " + this.ackCounters.toString());
-
-        // apply changes to the storage for the coordinator since it doensn't receive
-        // the writeOk message
-        Messages.UpdateData data = this.coordinatorProposals.remove(_msg.clock);
-
-        if (data != null) {
-            this.commitHistory.put(_msg.clock, data);
-            this.storage[data.index] = data.value;
-
-            callbackOnUpdateApplied(data.index, data.value);
-        }
 
         // if number of ack received >= (N/2 + 1) [quorum]
         if (this.ackCounters.get(_msg.clock) >= (Math.floor(group.size() / 2) + 1)) {
-            // apply the changes to local storage
+            // apply changes to the storage for the coordinator since it doensn't receive
+            // the writeOk message
+            Messages.UpdateData data = this.coordinatorProposals.remove(_msg.clock);
+
+            if (data != null) {
+                this.commitHistory.put(_msg.clock, data);
+                this.storage[data.index] = data.value;
+
+                callbackOnUpdateApplied(data.index, data.value);
+            }
+
             // send the writeOk to all the others
             for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
                 if (entry.getKey() != this.id) {
@@ -167,7 +169,6 @@ public class Replica extends AbstractReplica {
     }
 
     private final void handleWriteOk(Messages.WriteOk _msg) throws Exception {
-        debug("Received WRITE_OK from replica " + getSender().path().name() + " for clock: " + _msg.clock.toString());
         // update internal state with the new values
         if (pendingUpdateClock != null && pendingUpdateClock.equals(_msg.clock)) {
             commitHistory.put(pendingUpdateClock, pendingUpdateData);
@@ -183,8 +184,8 @@ public class Replica extends AbstractReplica {
 
         if (client != null) {
             Messages.NodeClock expectedClock = myClients.get(client);
-            if (expectedClock != null && expectedClock.equals(clock)) {
-                Messages.UpdateData data = commitHistory.get(clock);
+            if (expectedClock != null && expectedClock.equals(_msg.clock)) {
+                Messages.UpdateData data = commitHistory.get(_msg.clock);
                 tell(new AbstractClient.WriteResult(true, data.index, data.value, this.id), client);
                 myClients.remove(client); // Clean up
             }
@@ -210,7 +211,6 @@ public class Replica extends AbstractReplica {
 
     @Override
     public void initSystem(InitSystem sysInit) {
-        // TODO: implement
         this.group = sysInit.group;
         this.coordinatorId = sysInit.coordinator_id;
         // TODO: Start heartbeat scheduler if I am the coordinator
