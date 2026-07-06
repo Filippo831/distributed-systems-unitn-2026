@@ -33,9 +33,12 @@ public class Client extends AbstractClient {
         // TODO: handle timeout
     }
 
-    private final void handleReadResponse(Messages.ReadResponse _msg) throws Exception {
-        ReadResult result = new ReadResult(true, _msg.index, _msg.value, _msg.sender);
-        callbackOnReadResult(result);
+    private final void handleReadResult(AbstractClient.ReadResult _msg) throws Exception {
+        callbackOnReadResult(_msg);
+    }
+
+    private final void handleWriteResult(AbstractClient.WriteResult _msg) throws Exception {
+        callbackOnWriteResult(_msg);
     }
 
     @Override
@@ -58,7 +61,8 @@ public class Client extends AbstractClient {
                 // TODO add your message handlers here .match(, )
                 .match(AbstractClient.ReadRequest.class, this::handleReadRequest)
                 .match(AbstractClient.WriteRequest.class, this::handleWriteRequest)
-                .match(Messages.ReadResponse.class, this::handleReadResponse)
+                .match(AbstractClient.ReadResult.class, this::handleReadResult)
+                .match(AbstractClient.WriteResult.class, this::handleWriteResult)
                 .build();
     }
 

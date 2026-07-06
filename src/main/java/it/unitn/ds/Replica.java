@@ -27,6 +27,8 @@ public class Replica extends AbstractReplica {
     private Map<ActorRef, Messages.NodeClock> myClients = new HashMap<>();
     private Map<Messages.NodeClock, ActorRef> updateClients = new HashMap<>();
 
+    private Map<Messages.NodeClock, Messages.UpdateData> coordinatorProposals = new HashMap<>();
+
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL,
                 Optional.empty());
@@ -69,8 +71,18 @@ public class Replica extends AbstractReplica {
             // THIS IS THE COORDINATOR
             // - forward to other replicas UPDATE MESSAGE
             // - save client in myClients and updateClients with current clock
-            
+            //
+
             this.seqNum++;
+            Messages.NodeClock updateClock = new Messages.NodeClock(this.epoch, this.seqNum);
+            Messages.UpdateData updateData = new Messages.UpdateData(_msg.index, _msg.value);
+            this.coordinatorProposals.put(updateClock, updateData);
+
+            updateClients.put(new Messages.NodeClock(this.epoch, this.seqNum), _msg.client);
+            myClients.put(_msg.client, new Messages.NodeClock(this.epoch, this.seqNum));
+
+            this.ackCounters.put(updateClock, 1);
+
             // if is the coordinator who received the updateRequest, send an UPDATE to the
             // replicas
             for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
@@ -81,8 +93,6 @@ public class Replica extends AbstractReplica {
                                     getSelf());
                 }
             }
-            updateClients.put(new Messages.NodeClock(this.epoch, this.seqNum), _msg.client);
-            myClients.put(_msg.client, new Messages.NodeClock(this.epoch, this.seqNum));
         } else {
             // THIS IS NOT THE COORDINATOR
             // - forward the request to the coordinator
@@ -102,7 +112,7 @@ public class Replica extends AbstractReplica {
         updateClients.put(_msg.clock, _msg.client);
 
         if (myClients.containsKey(_msg.client) && myClients.get(_msg.client) == null) {
-            myClients.put(_msg.client, new Messages.NodeClock(this.epoch, this.seqNum));
+            myClients.put(_msg.client, _msg.clock);
         }
 
         // send ACK back to the coordinator
@@ -114,10 +124,22 @@ public class Replica extends AbstractReplica {
     private final void handleAck(Messages.Ack _msg) throws Exception {
         debug("Received ACK from replica " + getSender().path().name() + " for clock: " + _msg.clock.toString());
         // incerment number of received ack for the _msg.NodeClock
-        this.ackCounters.putIfAbsent(_msg.clock, 1);
-        this.ackCounters.put(_msg.clock, this.ackCounters.get(_msg.clock) + 1);
+        int currentCount = this.ackCounters.getOrDefault(_msg.clock, 0);
+        currentCount++;
+        this.ackCounters.put(_msg.clock, currentCount);
         // print the ackCounters for debug purposes
         debug("Ack counters: " + this.ackCounters.toString());
+
+        // apply changes to the storage for the coordinator since it doensn't receive
+        // the writeOk message
+        Messages.UpdateData data = this.coordinatorProposals.remove(_msg.clock);
+
+        if (data != null) {
+            this.commitHistory.put(_msg.clock, data);
+            this.storage[data.index] = data.value;
+
+            callbackOnUpdateApplied(data.index, data.value);
+        }
 
         // if number of ack received >= (N/2 + 1) [quorum]
         if (this.ackCounters.get(_msg.clock) >= (Math.floor(group.size() / 2) + 1)) {
