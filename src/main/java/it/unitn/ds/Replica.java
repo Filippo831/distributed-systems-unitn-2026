@@ -65,7 +65,7 @@ public class Replica extends AbstractReplica {
 
     private final void handleUpdateRequest(Messages.UpdateRequest _msg) throws Exception {
         if (this.id == coordinatorId) {
-            debug("Replica " + this.id + " is the coordinator and received UpdateRequest from client " + _msg.client);
+            // debug("Replica " + this.id + " is the coordinator and received UpdateRequest from client " + _msg.client);
             // THIS IS THE COORDINATOR
             // - forward to other replicas UPDATE MESSAGE
             // - save client in myClients and updateClients with current clock
@@ -85,6 +85,7 @@ public class Replica extends AbstractReplica {
             }
 
             this.ackCounters.put(updateClock, 1);
+            this.toCommitQueue.put(updateClock, updateData);
 
             // if is the coordinator who received the updateRequest, send an UPDATE to the
             // replicas
@@ -100,7 +101,7 @@ public class Replica extends AbstractReplica {
             // THIS IS NOT THE COORDINATOR
             // - forward the request to the coordinator
             // - add client to the list of clients without clock
-            debug("Replica " + this.id + " forwarding UpdateRequest to coordinator " + coordinatorId);
+            // debug("Replica " + this.id + " forwarding UpdateRequest to coordinator " + coordinatorId);
             Messages.UpdateRequest forwardMsg = new Messages.UpdateRequest(_msg.index, _msg.value,
                     _msg.client, true);
             group.get(coordinatorId).tell(forwardMsg, getSelf());
@@ -111,6 +112,8 @@ public class Replica extends AbstractReplica {
     }
 
     private final void handleUpdate(Messages.Update _msg) throws Exception {
+        // debug("Replica " + this.id + " received Update from coordinator " + coordinatorId + " with clock "
+        //         + _msg.clock);
         this.toCommitQueue.put(_msg.clock, new Messages.UpdateData(_msg.index, _msg.value));
 
         updateClients.put(_msg.clock, _msg.client);
@@ -126,6 +129,7 @@ public class Replica extends AbstractReplica {
     }
 
     private final void handleAck(Messages.Ack _msg) throws Exception {
+        // debug("Replica " + this.id + " received Ack from replica " + getSender() + " for clock " + _msg.clock);
         // incerment number of received ack for the _msg.NodeClock
         int currentCount = this.ackCounters.getOrDefault(_msg.clock, 0);
         currentCount++;
@@ -179,6 +183,7 @@ public class Replica extends AbstractReplica {
     }
 
     private final void handleWriteOk(Messages.WriteOk _msg) throws Exception {
+        // debug("Replica " + this.id + " received WriteOk from replica " + getSender() + " for clock " + _msg.clock);
         // update internal state with the new values
         Messages.UpdateData toCommitData = toCommitQueue.remove(_msg.clock);
         if (toCommitData != null) {
