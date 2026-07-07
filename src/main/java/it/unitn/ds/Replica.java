@@ -3,6 +3,7 @@ package it.unitn.ds;
 import akka.actor.ActorRef;
 import akka.actor.Props;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -20,8 +21,8 @@ public class Replica extends AbstractReplica {
     private Map<Messages.NodeClock, Messages.UpdateData> commitHistory;
     private int[] storage = new int[POSITIONS_LIST_LENGTH];
 
-    private Messages.NodeClock pendingUpdateClock;
-    private Messages.UpdateData pendingUpdateData;
+    private TreeMap<Messages.NodeClock, Messages.UpdateData> toCommitQueue;
+    private ArrayList<Messages.NodeClock> ackedList;
 
     private Map<ActorRef, Messages.NodeClock> myClients = new HashMap<>();
     private Map<Messages.NodeClock, ActorRef> updateClients = new HashMap<>();
@@ -46,9 +47,8 @@ public class Replica extends AbstractReplica {
         this.ackCounters = new HashMap<>();
         this.commitHistory = new TreeMap<>();
 
-        this.pendingUpdateClock = null;
-        this.pendingUpdateData = null;
-
+        this.toCommitQueue = new TreeMap<>();
+        this.ackedList = new ArrayList<>();
     }
 
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
@@ -111,8 +111,7 @@ public class Replica extends AbstractReplica {
     }
 
     private final void handleUpdate(Messages.Update _msg) throws Exception {
-        this.pendingUpdateClock = _msg.clock;
-        this.pendingUpdateData = new Messages.UpdateData(_msg.index, _msg.value);
+        this.toCommitQueue.put(_msg.clock, new Messages.UpdateData(_msg.index, _msg.value));
 
         updateClients.put(_msg.clock, _msg.client);
 
@@ -131,55 +130,65 @@ public class Replica extends AbstractReplica {
         int currentCount = this.ackCounters.getOrDefault(_msg.clock, 0);
         currentCount++;
         this.ackCounters.put(_msg.clock, currentCount);
-        // print the ackCounters for debug purposes
 
-        // if number of ack received >= (N/2 + 1) [quorum]
+        // if number of ack received >= (N/2 + 1) [quorum] add the clock to the
+        // ackdeList
         if (this.ackCounters.get(_msg.clock) >= (Math.floor(group.size() / 2) + 1)) {
-            // apply changes to the storage for the coordinator since it doensn't receive
-            // the writeOk message
-            Messages.UpdateData data = this.coordinatorProposals.remove(_msg.clock);
-
-            if (data != null) {
-                this.commitHistory.put(_msg.clock, data);
-                this.storage[data.index] = data.value;
-
-                callbackOnUpdateApplied(data.index, data.value);
+            // keep track of the acked clocks to later commit them in order
+            if (!this.ackedList.contains(_msg.clock)) {
+                this.ackedList.add(_msg.clock);
+                this.ackedList.sort((a, b) -> a.compareTo(b));
             }
+            // iterate until the smallest clock in the ackedList is not the first in the
+            // toCommitQueue.
+            while (!this.ackedList.isEmpty() && !this.toCommitQueue.isEmpty()
+                    && this.ackedList.get(0).equals(this.toCommitQueue.firstKey())) {
 
-            // send the writeOk to all the others
-            for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
-                if (entry.getKey() != this.id) {
-                    entry.getValue().tell(new Messages.WriteOk(_msg.clock), getSelf());
+                Messages.NodeClock clockToCommit = this.ackedList.remove(0);
+                Messages.UpdateData dataToCommit = this.toCommitQueue.remove(clockToCommit);
+
+                if (dataToCommit != null) {
+                    this.commitHistory.put(clockToCommit, dataToCommit);
+                    this.storage[dataToCommit.index] = dataToCommit.value;
+
+                    callbackOnUpdateApplied(dataToCommit.index, dataToCommit.value);
+
+                    // send the writeOk to all the others
+                    for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
+                        if (entry.getKey() != this.id) {
+                            entry.getValue().tell(new Messages.WriteOk(clockToCommit), getSelf());
+                        }
+                    }
+
+                    ActorRef client = updateClients.remove(clockToCommit);
+                    if (client != null) {
+                        Messages.NodeClock expectedClock = myClients.get(client);
+                        if (expectedClock != null && expectedClock.equals(clockToCommit)) {
+                            Messages.UpdateData clientData = commitHistory.get(clockToCommit);
+                            tell(new AbstractClient.WriteResult(true, clientData.index, clientData.value, this.id),
+                                    client);
+                            myClients.remove(client);
+                        }
+                    }
+
+                    this.ackCounters.remove(clockToCommit);
                 }
             }
-            ActorRef client = updateClients.remove(_msg.clock);
-            if (client != null) {
-                Messages.NodeClock expectedClock = myClients.get(client);
-                if (expectedClock != null && expectedClock.equals(_msg.clock)) {
-                    Messages.UpdateData clientData = commitHistory.get(_msg.clock);
-                    tell(new AbstractClient.WriteResult(true, clientData.index, clientData.value, this.id), client);
-                    myClients.remove(client);
-                }
-            }
-
-            this.ackCounters.remove(_msg.clock);
         }
-
         // TODO: handle timeout (I guess)
     }
 
     private final void handleWriteOk(Messages.WriteOk _msg) throws Exception {
         // update internal state with the new values
-        if (pendingUpdateClock != null && pendingUpdateClock.equals(_msg.clock)) {
-            commitHistory.put(pendingUpdateClock, pendingUpdateData);
-            storage[pendingUpdateData.index] = pendingUpdateData.value;
+        Messages.UpdateData toCommitData = toCommitQueue.remove(_msg.clock);
+        if (toCommitData != null) {
+            commitHistory.put(_msg.clock, toCommitData);
+            storage[toCommitData.index] = toCommitData.value;
 
-            // trigger the testing functions
-            callbackOnUpdateApplied(pendingUpdateData.index, pendingUpdateData.value);
-
-            pendingUpdateClock = null;
-            pendingUpdateData = null;
+            // trigger testing function
+            callbackOnUpdateApplied(toCommitData.index, toCommitData.value);
         }
+
         ActorRef client = updateClients.remove(_msg.clock);
 
         if (client != null) {
