@@ -143,4 +143,8 @@ public class Messages {
             clock = _clock;
         }
     }
+
+    public static class Heartbeat implements Serializable {
+        // empty, just a signal to check if the node is alive
+    }
 }

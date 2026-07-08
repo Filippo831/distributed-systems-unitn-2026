@@ -9,6 +9,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
 
+import scala.concurrent.duration.Duration;
+import java.util.concurrent.TimeUnit;
+import akka.actor.Cancellable;
+
 public class Replica extends AbstractReplica {
     private Map<Integer, ActorRef> group;
     private int coordinatorId;
@@ -28,6 +32,8 @@ public class Replica extends AbstractReplica {
     private Map<Messages.NodeClock, ActorRef> updateClients = new HashMap<>();
 
     private Map<Messages.NodeClock, Messages.UpdateData> coordinatorProposals = new HashMap<>();
+
+    private Cancellable heartbeatTimeout;
 
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL,
@@ -212,6 +218,22 @@ public class Replica extends AbstractReplica {
         // getSelf());
         tell(new AbstractClient.ReadResult(true, _msg.index, value, this.id), _msg.client);
     }
+    
+    public final void startCoordinatorHeartbeat() {
+        // debug("Replica " + this.id + " starting coordinator heartbeat");
+        getContext().getSystem().scheduler().scheduleAtFixedRate(
+                Duration.create(getCoordinatorBeatInterval(), TimeUnit.MILLISECONDS),
+                Duration.create(getCoordinatorBeatInterval(), TimeUnit.MILLISECONDS),
+                getSelf(),
+                new Messages.Heartbeat(),
+                getContext().dispatcher(),
+                getSelf());
+    }
+
+    private void resetHeartbeatTimeout() {
+		// TODO Auto-generated method stub
+		throw new UnsupportedOperationException("Unimplemented method 'resetHeartbeatTimeout'");
+	}
 
     @Override
     public int getSystemNumberOfActors() {
@@ -228,9 +250,16 @@ public class Replica extends AbstractReplica {
         this.group = sysInit.group;
         this.coordinatorId = sysInit.coordinator_id;
         // TODO: Start heartbeat scheduler if I am the coordinator
+        if (this.id == this.coordinatorId) {
+            startCoordinatorHeartbeat();
+        } else {
+            resetHeartbeatTimeout();
+        }
+
     }
 
-    @Override
+
+	@Override
     public final Receive createReceive() {
         return createBaseReceiveBuilder()
                 // TODO: add your message handlers here .match(, )
