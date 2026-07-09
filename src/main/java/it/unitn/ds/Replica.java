@@ -71,7 +71,8 @@ public class Replica extends AbstractReplica {
 
     private final void handleUpdateRequest(Messages.UpdateRequest _msg) throws Exception {
         if (this.id == coordinatorId) {
-            // debug("Replica " + this.id + " is the coordinator and received UpdateRequest from client " + _msg.client);
+            // debug("Replica " + this.id + " is the coordinator and received UpdateRequest
+            // from client " + _msg.client);
             // THIS IS THE COORDINATOR
             // - forward to other replicas UPDATE MESSAGE
             // - save client in myClients and updateClients with current clock
@@ -107,7 +108,8 @@ public class Replica extends AbstractReplica {
             // THIS IS NOT THE COORDINATOR
             // - forward the request to the coordinator
             // - add client to the list of clients without clock
-            // debug("Replica " + this.id + " forwarding UpdateRequest to coordinator " + coordinatorId);
+            // debug("Replica " + this.id + " forwarding UpdateRequest to coordinator " +
+            // coordinatorId);
             Messages.UpdateRequest forwardMsg = new Messages.UpdateRequest(_msg.index, _msg.value,
                     _msg.client, true);
             group.get(coordinatorId).tell(forwardMsg, getSelf());
@@ -118,8 +120,9 @@ public class Replica extends AbstractReplica {
     }
 
     private final void handleUpdate(Messages.Update _msg) throws Exception {
-        // debug("Replica " + this.id + " received Update from coordinator " + coordinatorId + " with clock "
-        //         + _msg.clock);
+        // debug("Replica " + this.id + " received Update from coordinator " +
+        // coordinatorId + " with clock "
+        // + _msg.clock);
         this.toCommitQueue.put(_msg.clock, new Messages.UpdateData(_msg.index, _msg.value));
 
         updateClients.put(_msg.clock, _msg.client);
@@ -135,7 +138,8 @@ public class Replica extends AbstractReplica {
     }
 
     private final void handleAck(Messages.Ack _msg) throws Exception {
-        // debug("Replica " + this.id + " received Ack from replica " + getSender() + " for clock " + _msg.clock);
+        // debug("Replica " + this.id + " received Ack from replica " + getSender() + "
+        // for clock " + _msg.clock);
         // incerment number of received ack for the _msg.NodeClock
         int currentCount = this.ackCounters.getOrDefault(_msg.clock, 0);
         currentCount++;
@@ -189,7 +193,8 @@ public class Replica extends AbstractReplica {
     }
 
     private final void handleWriteOk(Messages.WriteOk _msg) throws Exception {
-        // debug("Replica " + this.id + " received WriteOk from replica " + getSender() + " for clock " + _msg.clock);
+        // debug("Replica " + this.id + " received WriteOk from replica " + getSender()
+        // + " for clock " + _msg.clock);
         // update internal state with the new values
         Messages.UpdateData toCommitData = toCommitQueue.remove(_msg.clock);
         if (toCommitData != null) {
@@ -218,7 +223,15 @@ public class Replica extends AbstractReplica {
         // getSelf());
         tell(new AbstractClient.ReadResult(true, _msg.index, value, this.id), _msg.client);
     }
-    
+
+    private final void handleHeartbeat(Messages.Heartbeat _msg) {
+        for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
+            if (entry.getKey() != this.id) {
+                entry.getValue().tell(new Messages.Heartbeat(), getSelf());
+            }
+        }
+    }
+
     public final void startCoordinatorHeartbeat() {
         // debug("Replica " + this.id + " starting coordinator heartbeat");
         getContext().getSystem().scheduler().scheduleAtFixedRate(
@@ -231,9 +244,9 @@ public class Replica extends AbstractReplica {
     }
 
     private void resetHeartbeatTimeout() {
-		// TODO Auto-generated method stub
-		throw new UnsupportedOperationException("Unimplemented method 'resetHeartbeatTimeout'");
-	}
+        // TODO Auto-generated method stub
+        throw new UnsupportedOperationException("Unimplemented method 'resetHeartbeatTimeout'");
+    }
 
     @Override
     public int getSystemNumberOfActors() {
@@ -258,8 +271,7 @@ public class Replica extends AbstractReplica {
 
     }
 
-
-	@Override
+    @Override
     public final Receive createReceive() {
         return createBaseReceiveBuilder()
                 // TODO: add your message handlers here .match(, )
@@ -269,6 +281,7 @@ public class Replica extends AbstractReplica {
                 .match(Messages.Ack.class, this::handleAck)
                 .match(Messages.WriteOk.class, this::handleWriteOk)
                 .match(Messages.ReadRequest.class, this::handleReadRequest)
+                .match(Messages.Heartbeat.class, this::handleHeartbeat)
                 .build();
     }
 
