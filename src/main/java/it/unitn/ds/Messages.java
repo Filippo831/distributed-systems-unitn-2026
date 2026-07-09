@@ -145,6 +145,10 @@ public class Messages {
     }
 
     public static class Heartbeat implements Serializable {
-        // empty, just a signal to check if the node is alive
+        // empty, just a signal to check if the coordinator is alive
+    }
+
+    public static class HeartbeatTimeout implements Serializable {
+        // empty, just a signal to check when the timeout expires
     }
 }

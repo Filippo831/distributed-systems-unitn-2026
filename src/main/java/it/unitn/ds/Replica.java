@@ -232,6 +232,10 @@ public class Replica extends AbstractReplica {
         }
     }
 
+    public final void handleHeartbeatTimeout(Messages.HeartbeatTimeout _msg) {
+        // TODO: handle heartbeat timeout
+    }
+
     public final void startCoordinatorHeartbeat() {
         // debug("Replica " + this.id + " starting coordinator heartbeat");
         getContext().getSystem().scheduler().scheduleAtFixedRate(
@@ -244,8 +248,19 @@ public class Replica extends AbstractReplica {
     }
 
     private void resetHeartbeatTimeout() {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'resetHeartbeatTimeout'");
+        if (heartbeatTimeout != null && !heartbeatTimeout.isCancelled()) {
+            heartbeatTimeout.cancel();
+        }
+
+        int timetoutDuration = getCoordinatorBeatInterval() + getMaxLatencyPlusTolerance();
+
+        heartbeatTimeout = getContext().getSystem().scheduler().scheduleOnce(
+                Duration.create(timetoutDuration, TimeUnit.MILLISECONDS),
+                getSelf(),
+                new Messages.HeartbeatTimeout(),
+                getContext().dispatcher(),
+                getSelf());
+
     }
 
     @Override
@@ -262,10 +277,11 @@ public class Replica extends AbstractReplica {
     public void initSystem(InitSystem sysInit) {
         this.group = sysInit.group;
         this.coordinatorId = sysInit.coordinator_id;
-        // TODO: Start heartbeat scheduler if I am the coordinator
         if (this.id == this.coordinatorId) {
+            // if I'm the coordinator start the heartbeat to the other replicas
             startCoordinatorHeartbeat();
         } else {
+            // otherwise reset heartbeat timeout
             resetHeartbeatTimeout();
         }
 
@@ -282,6 +298,7 @@ public class Replica extends AbstractReplica {
                 .match(Messages.WriteOk.class, this::handleWriteOk)
                 .match(Messages.ReadRequest.class, this::handleReadRequest)
                 .match(Messages.Heartbeat.class, this::handleHeartbeat)
+                .match(Messages.HeartbeatTimeout.class, this::handleHeartbeatTimeout)
                 .build();
     }
 
