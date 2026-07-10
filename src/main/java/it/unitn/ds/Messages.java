@@ -105,4 +105,12 @@ public class Messages {
             clock = _clock;
         }
     }
+
+    // Create emty classes to handle timeouts
+    public static class HeartbeatTimeout {}
+    public static class UpdateTimeout {}
+    public static class WriteOkTimeout {}
+
+
+
 }

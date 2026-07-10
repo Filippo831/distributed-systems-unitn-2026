@@ -1,12 +1,13 @@
 package it.unitn.ds;
 
-import akka.actor.ActorRef;
-import akka.actor.Props;
-
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
+
+import akka.actor.ActorRef;
+import akka.actor.Cancellable;
+import akka.actor.Props; // from doc: something that can be cancelled, with method .cancel()
 
 public class Replica extends AbstractReplica {
     private Map<Integer, ActorRef> group;
@@ -22,6 +23,12 @@ public class Replica extends AbstractReplica {
 
     private Messages.NodeClock pendingUpdateClock;
     private Messages.UpdateData pendingUpdateData;
+
+    // init timers to detect coordinator crashes
+    private Cancellable heartbeatTimer = null; // wait for heartbeat message from coordinator, re-init once received
+    private Cancellable updateTimer = null; // starts after forwarding write request to the coordinator, wait for UPDATE message from coordinator
+    private Cancellable writeOkTimer = null; // starts after sending ACK in response to UPDATE message, wait for WRITEOK message from coordinator
+
 
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL,
@@ -140,16 +147,51 @@ public class Replica extends AbstractReplica {
         System.out.println("replica init");
     }
 
+    // This methods handle message reception in different situations: NORMAL, ELECTION, CRASHED
+    // .match() filters messages the replica can receive/handle in each state
+
+    // NORMAL state: the replica is wroking normally, no crash detected
     @Override
     public final Receive createReceive() {
         return createBaseReceiveBuilder()
-                // TODO: add your message handlers here .match(, )
                 .match(AbstractReplica.InitSystem.class, this::initSystem)
                 .match(Messages.UpdateRequest.class, this::handleUpdateRequest)
                 .match(Messages.Update.class, this::handleUpdate)
                 .match(Messages.Ack.class, this::handleAck)
                 .match(Messages.WriteOk.class, this::handleWriteOk)
+
+                // Also handle the timers
+                .match(Messages.HeartbeatTimeout.class, this::handleHeartbeatTimeout)
+                .match(Messages.UpdateTimeout.class, this::handleUpdateTimeout)
+                .match(Messages.WriteOkTimeout.class, this::handleWriteOkTimeout)
                 .build();
+    }
+
+    // ELECTION state: coordinator crash detected, switched to election state, where we want to handle only the election messages, ignoring updates
+    public final Receive createElectionReceive() {
+        return createBaseReceiveBuilder()
+                // handle election messages
+                .build();
+    }
+
+    // CRASHED state: replica crashed, simulate this by ignoring all messages
+    public final Receive createCrashedReceive() {
+        return createBaseReceiveBuilder()
+                .build();
+    }
+
+    // Method to handle timeouts
+    public final void handleHeartbeatTimeout(Messages.HeartbeatTimeout _msg) throws Exception {
+        
+
+    }
+
+    public final void handleUpdateTimeout(Messages.UpdateTimeout _msg) throws Exception {
+
+    }
+
+    public final void handleWriteOkTimeout(Messages.WriteOkTimeout _msg) throws Exception {
+
     }
 
 }
