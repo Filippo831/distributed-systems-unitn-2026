@@ -1,5 +1,9 @@
 package it.unitn.ds;
 
+import akka.actor.ActorRef;
+import akka.actor.Props;
+
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -8,6 +12,8 @@ import java.util.TreeMap;
 import akka.actor.ActorRef;
 import akka.actor.Cancellable;
 import akka.actor.Props; // from doc: something that can be cancelled, with method .cancel()
+import scala.concurrent.duration.Duration;
+import java.util.concurrent.TimeUnit;
 
 public class Replica extends AbstractReplica {
     private Map<Integer, ActorRef> group;
@@ -21,8 +27,15 @@ public class Replica extends AbstractReplica {
     private Map<Messages.NodeClock, Messages.UpdateData> commitHistory;
     private int[] storage = new int[POSITIONS_LIST_LENGTH];
 
-    private Messages.NodeClock pendingUpdateClock;
-    private Messages.UpdateData pendingUpdateData;
+    private TreeMap<Messages.NodeClock, Messages.UpdateData> toCommitQueue;
+    private ArrayList<Messages.NodeClock> ackedList;
+
+    private Map<ActorRef, Messages.NodeClock> myClients = new HashMap<>();
+    private Map<Messages.NodeClock, ActorRef> updateClients = new HashMap<>();
+
+    private Map<Messages.NodeClock, Messages.UpdateData> coordinatorProposals = new HashMap<>();
+
+    private Cancellable heartbeatTimeout;
 
     // init timers to detect coordinator crashes
     private Cancellable heartbeatTimer = null; // wait for heartbeat message from coordinator, re-init once received
@@ -48,9 +61,8 @@ public class Replica extends AbstractReplica {
         this.ackCounters = new HashMap<>();
         this.commitHistory = new TreeMap<>();
 
-        this.pendingUpdateClock = null;
-        this.pendingUpdateData = null;
-
+        this.toCommitQueue = new TreeMap<>();
+        this.ackedList = new ArrayList<>();
     }
 
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
@@ -66,67 +78,182 @@ public class Replica extends AbstractReplica {
     }
 
     private final void handleUpdateRequest(Messages.UpdateRequest _msg) throws Exception {
-        System.out.println("received UpdateRequest from client");
         if (this.id == coordinatorId) {
+            // debug("Replica " + this.id + " is the coordinator and received UpdateRequest
+            // from client " + _msg.client);
+            // THIS IS THE COORDINATOR
+            // - forward to other replicas UPDATE MESSAGE
+            // - save client in myClients and updateClients with current clock
+            //
+
+            this.seqNum++;
+            Messages.NodeClock updateClock = new Messages.NodeClock(this.epoch, this.seqNum);
+            Messages.UpdateData updateData = new Messages.UpdateData(_msg.index, _msg.value);
+
+            // save the value of the update to later make it persistent for coordinator
+            this.coordinatorProposals.put(updateClock, updateData);
+
+            updateClients.put(new Messages.NodeClock(this.epoch, this.seqNum), _msg.client);
+
+            if (!_msg.fromReplica) {
+                myClients.put(_msg.client, new Messages.NodeClock(this.epoch, this.seqNum));
+            }
+
+            this.ackCounters.put(updateClock, 1);
+            this.toCommitQueue.put(updateClock, updateData);
+
             // if is the coordinator who received the updateRequest, send an UPDATE to the
             // replicas
             for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
                 if (entry.getKey() != this.id) {
                     entry.getValue()
                             .tell(new Messages.Update(_msg.index, _msg.value,
-                                    new Messages.NodeClock(this.epoch, this.seqNum)),
+                                    new Messages.NodeClock(this.epoch, this.seqNum), _msg.client),
                                     getSelf());
                 }
             }
         } else {
-            // if not the coordinator, forward to the coordinator
-            group.get(coordinatorId).tell(_msg, getSelf());
+            // THIS IS NOT THE COORDINATOR
+            // - forward the request to the coordinator
+            // - add client to the list of clients without clock
+            // debug("Replica " + this.id + " forwarding UpdateRequest to coordinator " +
+            // coordinatorId);
+            Messages.UpdateRequest forwardMsg = new Messages.UpdateRequest(_msg.index, _msg.value,
+                    _msg.client, true);
+            group.get(coordinatorId).tell(forwardMsg, getSelf());
+
+            myClients.put(_msg.client, null);
         }
         // TODO: handle timeout (I guess)
     }
 
     private final void handleUpdate(Messages.Update _msg) throws Exception {
-        this.pendingUpdateClock = _msg.clock;
-        this.pendingUpdateData = new Messages.UpdateData(_msg.index, _msg.value);
+        // debug("Replica " + this.id + " received Update from coordinator " +
+        // coordinatorId + " with clock "
+        // + _msg.clock);
+        this.toCommitQueue.put(_msg.clock, new Messages.UpdateData(_msg.index, _msg.value));
+
+        updateClients.put(_msg.clock, _msg.client);
+
+        if (myClients.containsKey(_msg.client) && myClients.get(_msg.client) == null) {
+            myClients.put(_msg.client, _msg.clock);
+        }
 
         // send ACK back to the coordinator
-        _msg.clock.incrementSeqNum();
         group.get(coordinatorId).tell(new Messages.Ack(_msg.clock), getSelf());
 
         // TODO: handle timeout (I guess)
     }
 
     private final void handleAck(Messages.Ack _msg) throws Exception {
+        // debug("Replica " + this.id + " received Ack from replica " + getSender() + "
+        // for clock " + _msg.clock);
         // incerment number of received ack for the _msg.NodeClock
-        this.ackCounters.putIfAbsent(_msg.clock, 1);
-        this.ackCounters.put(_msg.clock, this.ackCounters.get(_msg.clock) + 1);
+        int currentCount = this.ackCounters.getOrDefault(_msg.clock, 0);
+        currentCount++;
+        this.ackCounters.put(_msg.clock, currentCount);
 
-        // if number of ack received > (N/2 + 1) [quorum]
-        if (this.ackCounters.get(_msg.clock) > (Math.floor(group.size() / 2) + 1)) {
-            // send the writeOk to all the others
-            _msg.clock.incrementSeqNum();
-            for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
-                if (entry.getKey() != this.id) {
-                    entry.getValue().tell(new Messages.WriteOk(_msg.clock), getSelf());
+        // if number of ack received >= (N/2 + 1) [quorum] add the clock to the
+        // ackdeList
+        if (this.ackCounters.get(_msg.clock) >= (Math.floor(group.size() / 2) + 1)) {
+            // keep track of the acked clocks to later commit them in order
+            if (!this.ackedList.contains(_msg.clock)) {
+                this.ackedList.add(_msg.clock);
+                this.ackedList.sort((a, b) -> a.compareTo(b));
+            }
+            // iterate until the smallest clock in the ackedList is not the first in the
+            // toCommitQueue.
+            while (!this.ackedList.isEmpty() && !this.toCommitQueue.isEmpty()
+                    && this.ackedList.get(0).equals(this.toCommitQueue.firstKey())) {
+
+                Messages.NodeClock clockToCommit = this.ackedList.remove(0);
+                Messages.UpdateData dataToCommit = this.toCommitQueue.remove(clockToCommit);
+
+                if (dataToCommit != null) {
+                    this.commitHistory.put(clockToCommit, dataToCommit);
+                    this.storage[dataToCommit.index] = dataToCommit.value;
+
+                    callbackOnUpdateApplied(dataToCommit.index, dataToCommit.value);
+
+                    // send the writeOk to all the others
+                    for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
+                        if (entry.getKey() != this.id) {
+                            entry.getValue().tell(new Messages.WriteOk(clockToCommit), getSelf());
+                        }
+                    }
+
+                    ActorRef client = updateClients.remove(clockToCommit);
+                    if (client != null) {
+                        Messages.NodeClock expectedClock = myClients.get(client);
+                        if (expectedClock != null && expectedClock.equals(clockToCommit)) {
+                            Messages.UpdateData clientData = commitHistory.get(clockToCommit);
+                            tell(new AbstractClient.WriteResult(true, clientData.index, clientData.value, this.id),
+                                    client);
+                            myClients.remove(client);
+                        }
+                    }
+
+                    this.ackCounters.remove(clockToCommit);
                 }
             }
         }
-
         // TODO: handle timeout (I guess)
     }
 
     private final void handleWriteOk(Messages.WriteOk _msg) throws Exception {
+        // debug("Replica " + this.id + " received WriteOk from replica " + getSender()
+        // + " for clock " + _msg.clock);
         // update internal state with the new values
-        if (pendingUpdateClock != null && pendingUpdateClock.equals(_msg.clock)) {
-            commitHistory.put(pendingUpdateClock, pendingUpdateData);
-            storage[pendingUpdateData.index] = pendingUpdateData.value;
+        Messages.UpdateData toCommitData = toCommitQueue.remove(_msg.clock);
+        if (toCommitData != null) {
+            commitHistory.put(_msg.clock, toCommitData);
+            storage[toCommitData.index] = toCommitData.value;
 
-            // trigger the testing functions
-            callbackOnUpdateApplied(pendingUpdateData.index, pendingUpdateData.value);
-
-            pendingUpdateClock = null;
-            pendingUpdateData = null;
+            // trigger testing function
+            callbackOnUpdateApplied(toCommitData.index, toCommitData.value);
         }
+
+        ActorRef client = updateClients.remove(_msg.clock);
+
+        if (client != null) {
+            Messages.NodeClock expectedClock = myClients.get(client);
+            if (expectedClock != null && expectedClock.equals(_msg.clock)) {
+                Messages.UpdateData data = commitHistory.get(_msg.clock);
+                tell(new AbstractClient.WriteResult(true, data.index, data.value, this.id), client);
+                myClients.remove(client); // Clean up
+            }
+        }
+    }
+
+    private final void handleReadRequest(Messages.ReadRequest _msg) {
+        int value = storage[_msg.index];
+        // _msg.client.tell(new Messages.ReadResponse(_msg.index, value, this.id),
+        // getSelf());
+        tell(new AbstractClient.ReadResult(true, _msg.index, value, this.id), _msg.client);
+    }
+
+    private final void handleHeartbeat(Messages.Heartbeat _msg) {
+        for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
+            if (entry.getKey() != this.id) {
+                entry.getValue().tell(new Messages.Heartbeat(), getSelf());
+            }
+        }
+    }
+
+    public final void startCoordinatorHeartbeat() {
+        // debug("Replica " + this.id + " starting coordinator heartbeat");
+        getContext().getSystem().scheduler().scheduleAtFixedRate(
+                Duration.create(getCoordinatorBeatInterval(), TimeUnit.MILLISECONDS),
+                Duration.create(getCoordinatorBeatInterval(), TimeUnit.MILLISECONDS),
+                getSelf(),
+                new Messages.Heartbeat(),
+                getContext().dispatcher(),
+                getSelf());
+    }
+
+    private void resetHeartbeatTimeout() {
+        // TODO Auto-generated method stub
+        throw new UnsupportedOperationException("Unimplemented method 'resetHeartbeatTimeout'");
     }
 
     @Override
@@ -141,10 +268,15 @@ public class Replica extends AbstractReplica {
 
     @Override
     public void initSystem(InitSystem sysInit) {
-        // TODO: implement
         this.group = sysInit.group;
         this.coordinatorId = sysInit.coordinator_id;
-        System.out.println("replica init");
+        // TODO: Start heartbeat scheduler if I am the coordinator
+        if (this.id == this.coordinatorId) {
+            startCoordinatorHeartbeat();
+        } else {
+            resetHeartbeatTimeout();
+        }
+
     }
 
     // This methods handle message reception in different situations: NORMAL, ELECTION, CRASHED
@@ -164,6 +296,8 @@ public class Replica extends AbstractReplica {
                 .match(Messages.HeartbeatTimeout.class, this::handleHeartbeatTimeout)
                 .match(Messages.UpdateTimeout.class, this::handleUpdateTimeout)
                 .match(Messages.WriteOkTimeout.class, this::handleWriteOkTimeout)
+                .match(Messages.ReadRequest.class, this::handleReadRequest)
+                .match(Messages.Heartbeat.class, this::handleHeartbeat)
                 .build();
     }
 
@@ -182,7 +316,7 @@ public class Replica extends AbstractReplica {
 
     // Method to handle timeouts
     public final void handleHeartbeatTimeout(Messages.HeartbeatTimeout _msg) throws Exception {
-        
+
 
     }
 

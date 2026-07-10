@@ -16,7 +16,7 @@ public class Main {
         System.out.println("========================================\n");
 
         final int N_REPLICAS = 4;
-        final int COORDINATOR_ID = 0;
+        final int COORDINATOR_ID = 1;
         final ActorSystem system = ActorSystem.create("TestMain");
 
         Logger.setDestinationStdout();
@@ -39,9 +39,18 @@ public class Main {
 
         // TODO: Create your clients
         ActorRef testClient = system.actorOf(Client.props(2000, 2000, Optional.of(replicas.get(0))), "Client_1");
-        testClient.tell(new AbstractClient.WriteRequest(1, 100, replicas.get(1)), ActorRef.noSender());
         
         // TODO: Implement your main logic
+        // write a value and read it back from the same replica
+        testClient.tell(new AbstractClient.WriteRequest(1, 100, replicas.get(0)), ActorRef.noSender());
+        // wait for a while to let the write complete
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        testClient.tell(new AbstractClient.ReadRequest(1, replicas.get(0)), ActorRef.noSender());
+
 
         system.terminate();
 

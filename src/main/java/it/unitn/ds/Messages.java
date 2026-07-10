@@ -1,6 +1,7 @@
 package it.unitn.ds;
 
 import java.io.Serializable;
+import java.util.Objects;
 
 import akka.actor.ActorRef;
 
@@ -17,7 +18,7 @@ public class Messages {
         }
     }
 
-    public static class NodeClock {
+    public static class NodeClock implements Comparable<NodeClock>{
         public int epoch;
         public int seqNum;
 
@@ -35,8 +36,27 @@ public class Messages {
             return this.seqNum > _other.seqNum;
         }
 
-        public boolean equals(NodeClock _other) {
-            return (this.epoch == _other.epoch) && (this.seqNum == _other.seqNum);
+        @Override
+        public int compareTo(NodeClock _other) {
+            if (this.epoch != _other.epoch) {
+                return Integer.compare(this.epoch, _other.epoch);
+            }
+            return Integer.compare(this.seqNum, _other.seqNum);
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o)
+                return true;
+            if (o == null || getClass() != o.getClass())
+                return false;
+            NodeClock updateId = (NodeClock) o;
+            return epoch == updateId.epoch && seqNum == updateId.seqNum;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(epoch, seqNum);
         }
 
         public void incrementSeqNum() {
@@ -53,14 +73,16 @@ public class Messages {
     public static class UpdateRequest implements Serializable {
         public final int index;
         public final int value;
+        public final boolean fromReplica;
 
         // keep track on who sent the message
         public final ActorRef client;
 
-        public UpdateRequest(int _index, int _value, ActorRef _client) {
+        public UpdateRequest(int _index, int _value, ActorRef _client, boolean _fromReplica) {
             index = _index;
             value = _value;
             client = _client;
+            fromReplica = _fromReplica;
         }
     }
 
@@ -74,6 +96,20 @@ public class Messages {
             index = _index;
             client = _client;
         }
+
+    }
+
+    public static class ReadResponse implements Serializable {
+        public final int index;
+        public final int value;
+
+        public final int sender;
+
+        public ReadResponse(int _index, int _value, int _sender) {
+            index = _index;
+            value = _value;
+            sender = _sender;
+        }
     }
 
     public static class Update implements Serializable {
@@ -81,11 +117,13 @@ public class Messages {
         public final int value;
 
         public final NodeClock clock;
+        public final ActorRef client;
 
-        public Update(int _index, int _value, NodeClock _clock) {
+        public Update(int _index, int _value, NodeClock _clock, ActorRef _client) {
             index = _index;
             value = _value;
             clock = _clock;
+            client = _client;
         }
     }
 
@@ -113,4 +151,7 @@ public class Messages {
 
 
 
+    public static class Heartbeat implements Serializable {
+        // empty, just a signal to check if the node is alive
+    }
 }

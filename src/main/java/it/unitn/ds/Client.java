@@ -33,6 +33,14 @@ public class Client extends AbstractClient {
         // TODO: handle timeout
     }
 
+    private final void handleReadResult(AbstractClient.ReadResult _msg) throws Exception {
+        callbackOnReadResult(_msg);
+    }
+
+    private final void handleWriteResult(AbstractClient.WriteResult _msg) throws Exception {
+        callbackOnWriteResult(_msg);
+    }
+
     @Override
     public void sendRead(ActorRef replica, int index) {
         // create a message type ReadRequest and forward it to the replica
@@ -43,7 +51,7 @@ public class Client extends AbstractClient {
     @Override
     public void sendWrite(ActorRef replica, int index, int value) {
         // create a message type UpdateRequest and forward it to the replica
-        Messages.UpdateRequest message = new Messages.UpdateRequest(index, value, getSelf());
+        Messages.UpdateRequest message = new Messages.UpdateRequest(index, value, getSelf(), false);
         replica.tell(message, getSelf());
     }
 
@@ -53,6 +61,8 @@ public class Client extends AbstractClient {
                 // TODO add your message handlers here .match(, )
                 .match(AbstractClient.ReadRequest.class, this::handleReadRequest)
                 .match(AbstractClient.WriteRequest.class, this::handleWriteRequest)
+                .match(AbstractClient.ReadResult.class, this::handleReadResult)
+                .match(AbstractClient.WriteResult.class, this::handleWriteResult)
                 .build();
     }
 
