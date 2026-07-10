@@ -1,17 +1,16 @@
 package it.unitn.ds;
 
 import akka.actor.ActorRef;
+import akka.actor.Cancellable;
 import akka.actor.Props;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
-
-import scala.concurrent.duration.Duration;
-import java.util.concurrent.TimeUnit;
-import akka.actor.Cancellable;
 
 public class Replica extends AbstractReplica {
     private Map<Integer, ActorRef> group;
@@ -33,7 +32,10 @@ public class Replica extends AbstractReplica {
 
     private Map<Messages.NodeClock, Messages.UpdateData> coordinatorProposals = new HashMap<>();
 
-    private Cancellable heartbeatTimeout;
+    private Set<Integer> crashedReplicas;
+
+    private Cancellable electionHopTimeout;
+    private Cancellable electionGlobalTimeout;
 
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL,
@@ -55,6 +57,11 @@ public class Replica extends AbstractReplica {
 
         this.toCommitQueue = new TreeMap<>();
         this.ackedList = new ArrayList<>();
+
+        this.crashedReplicas = new HashSet<>();
+
+        this.electionHopTimeout = null;
+        this.electionGlobalTimeout = null;
     }
 
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
@@ -67,6 +74,15 @@ public class Replica extends AbstractReplica {
             ActorRef listener) {
         return Props.create(Replica.class,
                 () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval, Optional.ofNullable(listener)));
+    }
+
+    private int getNextNodeId() {
+        // get the next id that is not inside the crashedReplica set
+        int nextId = (this.id + 1) % group.size();
+        while (crashedReplicas.contains(nextId)) {
+            nextId = (nextId + 1) % group.size();
+        }
+        return nextId;
     }
 
     private final void handleUpdateRequest(Messages.UpdateRequest _msg) throws Exception {
@@ -224,42 +240,14 @@ public class Replica extends AbstractReplica {
         tell(new AbstractClient.ReadResult(true, _msg.index, value, this.id), _msg.client);
     }
 
-    private final void handleHeartbeat(Messages.Heartbeat _msg) {
-        for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
-            if (entry.getKey() != this.id) {
-                entry.getValue().tell(new Messages.Heartbeat(), getSelf());
-            }
+    private final void handleElectionMessage(Messages.ElectionMessage _msg) {
+        if (this.id == _msg.initiatorId) {
+            // TODO: if my id is the same as the initiator send a message with the new
+            // coordinator
         }
-    }
-
-    public final void handleHeartbeatTimeout(Messages.HeartbeatTimeout _msg) {
-        // TODO: handle heartbeat timeout
-    }
-
-    public final void startCoordinatorHeartbeat() {
-        // debug("Replica " + this.id + " starting coordinator heartbeat");
-        getContext().getSystem().scheduler().scheduleAtFixedRate(
-                Duration.create(getCoordinatorBeatInterval(), TimeUnit.MILLISECONDS),
-                Duration.create(getCoordinatorBeatInterval(), TimeUnit.MILLISECONDS),
-                getSelf(),
-                new Messages.Heartbeat(),
-                getContext().dispatcher(),
-                getSelf());
-    }
-
-    private void resetHeartbeatTimeout() {
-        if (heartbeatTimeout != null && !heartbeatTimeout.isCancelled()) {
-            heartbeatTimeout.cancel();
-        }
-
-        int timetoutDuration = getCoordinatorBeatInterval() + getMaxLatencyPlusTolerance();
-
-        heartbeatTimeout = getContext().getSystem().scheduler().scheduleOnce(
-                Duration.create(timetoutDuration, TimeUnit.MILLISECONDS),
-                getSelf(),
-                new Messages.HeartbeatTimeout(),
-                getContext().dispatcher(),
-                getSelf());
+        // send back the ack to the sender and reset the timeout
+        _msg.sender.tell(new Messages.ElectionAck(), getSelf());
+        // send an election message to the next node
 
     }
 
@@ -277,14 +265,6 @@ public class Replica extends AbstractReplica {
     public void initSystem(InitSystem sysInit) {
         this.group = sysInit.group;
         this.coordinatorId = sysInit.coordinator_id;
-        if (this.id == this.coordinatorId) {
-            // if I'm the coordinator start the heartbeat to the other replicas
-            startCoordinatorHeartbeat();
-        } else {
-            // otherwise reset heartbeat timeout
-            resetHeartbeatTimeout();
-        }
-
     }
 
     @Override
@@ -297,8 +277,7 @@ public class Replica extends AbstractReplica {
                 .match(Messages.Ack.class, this::handleAck)
                 .match(Messages.WriteOk.class, this::handleWriteOk)
                 .match(Messages.ReadRequest.class, this::handleReadRequest)
-                .match(Messages.Heartbeat.class, this::handleHeartbeat)
-                .match(Messages.HeartbeatTimeout.class, this::handleHeartbeatTimeout)
+                .match(Messages.ElectionMessage.class, this::handleElectionMessage)
                 .build();
     }
 

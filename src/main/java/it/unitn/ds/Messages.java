@@ -144,11 +144,20 @@ public class Messages {
         }
     }
 
-    public static class Heartbeat implements Serializable {
-        // empty, just a signal to check if the coordinator is alive
+    public static class ElectionMessage implements Serializable {
+        public final int initiatorId;
+        public final int bestCandidateId;
+        public final NodeClock bestCandidateClock;
+        public final ActorRef sender;
+
+        public ElectionMessage(int _initiatorId, int _bestCandidateId, NodeClock _bestCandidateClock, ActorRef _sender) {
+            initiatorId = _initiatorId;
+            bestCandidateId = _bestCandidateId;
+            bestCandidateClock = _bestCandidateClock;
+            sender = _sender;
+        }
     }
 
-    public static class HeartbeatTimeout implements Serializable {
-        // empty, just a signal to check when the timeout expires
-    }
+    public static class ElectionAck implements Serializable {}
+
 }
