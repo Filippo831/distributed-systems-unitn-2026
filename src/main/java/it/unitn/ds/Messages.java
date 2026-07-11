@@ -1,6 +1,8 @@
 package it.unitn.ds;
 
 import java.io.Serializable;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 
 import akka.actor.ActorRef;
@@ -154,4 +156,11 @@ public class Messages {
     public static class Heartbeat implements Serializable {
         // empty, just a signal to check if the node is alive
     }
+
+    public static class Election {
+        // this will contain a map of node id and node clock, where node clock represents last message seen by that node
+        public final Map<Integer, Messages.NodeClock> candidates = new HashMap<>();
+
+    }
+    
 }

@@ -1,7 +1,9 @@
 package it.unitn.ds;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
@@ -10,10 +12,10 @@ import java.util.concurrent.TimeUnit;
 import akka.actor.ActorRef;
 import akka.actor.Cancellable;
 import akka.actor.Props;
-import scala.concurrent.duration.Duration; // from doc: something that can be cancelled, with method .cancel()
+import scala.concurrent.duration.Duration;
 
 public class Replica extends AbstractReplica {
-    private Map<Integer, ActorRef> group;
+    private Map<Integer, ActorRef> group; // maps node Id and node "address", contains all replicas, also coordinator
     private int coordinatorId;
 
     private int epoch;
@@ -39,7 +41,7 @@ public class Replica extends AbstractReplica {
     private Cancellable updateTimer = null; // starts after forwarding write request to the coordinator, wait for UPDATE message from coordinator
     private Cancellable writeOkTimer = null; // starts after sending ACK in response to UPDATE message, wait for WRITEOK message from coordinator
 
-    private int timer_duration = 5;
+    private final int timer_duration = 5;
 
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL,
@@ -87,7 +89,10 @@ public class Replica extends AbstractReplica {
             // - save client in myClients and updateClients with current clock
 
             this.seqNum++;
+
+            // define node clock -> each update the coordinator sends is identified by a pair <e, i>
             Messages.NodeClock updateClock = new Messages.NodeClock(this.epoch, this.seqNum);
+
             Messages.UpdateData updateData = new Messages.UpdateData(_msg.index, _msg.value);
 
             // save the value of the update to later make it persistent for coordinator
@@ -123,8 +128,7 @@ public class Replica extends AbstractReplica {
             // myClients -> <ActorRef, Messages.NodeClock> -> NodeClock is null, will be assigned by coordinator
             this.myClients.put(_msg.client, null);
 
-            Messages.UpdateRequest forwardMsg = new Messages.UpdateRequest(_msg.index, _msg.value,
-                    _msg.client, true);
+            Messages.UpdateRequest forwardMsg = new Messages.UpdateRequest(_msg.index, _msg.value, _msg.client, true);
             group.get(coordinatorId).tell(forwardMsg, getSelf());
 
             // when the node sends UpdateRequest to the coordinator it starts waiting for the Update message, so the updateTimer is started
@@ -147,11 +151,12 @@ public class Replica extends AbstractReplica {
         // received Update message, cancel the Update timer!
         updateTimer.cancel();
 
+        // get node clock assigned by coordinator _msg.clock
         this.toCommitQueue.put(_msg.clock, new Messages.UpdateData(_msg.index, _msg.value));
 
         updateClients.put(_msg.clock, _msg.client);
 
-        // if client is this node client and the message NodeClock associated is still null, must be initialized now that it has the clock value assigned by the coordionator
+        // if client is this node's client and the NodeClock associated with the message is still null, must be initialized now that it has the clock value assigned by the coordionator
         if (myClients.containsKey(_msg.client) && myClients.get(_msg.client) == null) {
             myClients.put(_msg.client, _msg.clock);
         }
@@ -324,7 +329,9 @@ public class Replica extends AbstractReplica {
     // ELECTION state: coordinator crash detected, switched to election state, where we want to handle only the election messages, ignoring updates
     public final Receive createElectionReceive() {
         return createBaseReceiveBuilder()
-                // handle election messages
+                // myTODO: handle election messages
+                // .match(Messages.Election.class, this::handleElection)
+                // .match(Messages.ElectionAck.class, this::handleElectionAck)
                 .build();
     }
 
@@ -337,12 +344,34 @@ public class Replica extends AbstractReplica {
     // TIMEOUTS MANAGEMENT
     // handle Update message timeout
     public final void handleUpdateTimeout(Messages.UpdateTimeout _msg) throws Exception {
-        // myTODO: cancel + election + message as in heartbeat
+        // log info
+        Logger.log("Update timeout detected by node " + this.id + ". Starting election protocol.");
+
+        // cancel all timers, not needed anymore
+        cancelAllTimers();
+        
+        // change state: NORMAL -> ELECTION    
+        // this is done by changing the node behaviour using the "message filter" defined in createElectionReceive
+        getContext().become(createElectionReceive());
+
+        // start election
+        startElection();
     }
 
     // handle WriteOk message timeout
     public final void handleWriteOkTimeout(Messages.WriteOkTimeout _msg) throws Exception {
-        // myTODO: cancel + election + message as in heartbeat
+        // log info
+        Logger.log("WriteOk timeout detected by node " + this.id + ". Starting election protocol.");
+
+        // cancel all timers, not needed anymore
+        cancelAllTimers();
+        
+        // change state: NORMAL -> ELECTION    
+        // this is done by changing the node behaviour using the "message filter" defined in createElectionReceive
+        getContext().become(createElectionReceive());
+
+        // start election
+        startElection();
     }
 
     // HEARTBEAT MANAGEMENT
@@ -404,7 +433,7 @@ public class Replica extends AbstractReplica {
         getContext().become(createElectionReceive());
 
         // start election
-        // TODO: send election message to next node in the ring
+        startElection();
     }
 
     // utility function to cancel all timers
@@ -413,5 +442,50 @@ public class Replica extends AbstractReplica {
         writeOkTimer.cancel();
         heartbeatTimer.cancel();
     }
+
+    // ELECTION MANAGEMENT  
+    public ActorRef getNextNode(){
+        // hash map cannot be sorted directly, convert group in an array list of the ids
+        List<Integer> sortedGroupIds = new ArrayList<>(this.group.keySet());
+
+        // sort
+        Collections.sort(sortedGroupIds);
+
+        // get index in the list of the current node
+        int i = sortedGroupIds.indexOf(this.id);
+
+        int nextId = this.id;
+
+        do{
+            // get next index (consider circularity)
+            i = (i + 1) % sortedGroupIds.size();
+
+            // get corresponding next id in the list
+            nextId = sortedGroupIds.get(i);
+
+        } while(nextId == coordinatorId); // ignore coordinatorId
+        
+        // return 
+        return this.group.get(nextId);
+    }
+
+    public void startElection(){
+        // rest coordinator id
+        this.coordinatorId = -1;
+
+        // create node message
+        Messages.Election election = new Messages.Election();
+
+        // append node id and last seen message
+        election.candidates.put(this.id, this.toCommitQueue.lastKey());
+
+        // forward to next node in the ring
+        group.get(this.id).tell(election, getNextNode());
+
+    }
+
+
+
+
 
 }
