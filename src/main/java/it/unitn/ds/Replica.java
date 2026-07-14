@@ -3,9 +3,11 @@ package it.unitn.ds;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
 
@@ -40,6 +42,17 @@ public class Replica extends AbstractReplica {
     private Cancellable heartbeatTimer = null; // wait for heartbeat message from coordinator, re-init once received
     private Cancellable updateTimer = null; // starts after forwarding write request to the coordinator, wait for UPDATE message from coordinator
     private Cancellable writeOkTimer = null; // starts after sending ACK in response to UPDATE message, wait for WRITEOK message from coordinator
+
+    // init variable and timer for the election protocol
+    Messages.Election election = new Messages.Election(); // election message, will contain coordinator candidates
+    private Cancellable electionAckTimer = null; // starts after forwarding election message to the next node in the ring, wait for ACK  message from receiver
+    private Cancellable electionTimer = null; // starts after forwarding election message to the next node in the ring, wait for the end of the election protocol
+    private boolean inElection = false; // varibale to know if the replica is in election
+    private int nextNodeId;
+
+    // crashed replicas list
+    private Set<Integer> crashedReplicas = new HashSet<>();
+
 
     private final int timer_duration = 5;
 
@@ -318,7 +331,7 @@ public class Replica extends AbstractReplica {
                 .match(Messages.WriteOk.class, this::handleWriteOk)
                 .match(Messages.Heartbeat.class, this::handleHeartbeat) // handle heartbeat
 
-                // Also handle the timers
+                // also handle the timeouts
                 .match(Messages.HeartbeatTimeout.class, this::handleHeartbeatTimeout)
                 .match(Messages.UpdateTimeout.class, this::handleUpdateTimeout)
                 .match(Messages.WriteOkTimeout.class, this::handleWriteOkTimeout)
@@ -329,9 +342,13 @@ public class Replica extends AbstractReplica {
     // ELECTION state: coordinator crash detected, switched to election state, where we want to handle only the election messages, ignoring updates
     public final Receive createElectionReceive() {
         return createBaseReceiveBuilder()
-                // myTODO: handle election messages
-                // .match(Messages.Election.class, this::handleElection)
-                // .match(Messages.ElectionAck.class, this::handleElectionAck)
+                // handle election messages and acks
+                .match(Messages.Election.class, this::handleElection)
+                .match(Messages.ElectionAck.class, this::handleElectionAck)
+
+                // also handle the timeouts
+                .match(Messages.ElectionTimeout.class, this::handleElectionTimeout)
+                .match(Messages.ElectionAckTimeout.class, this::handleElectionAckTimeout)
                 .build();
     }
 
@@ -344,34 +361,26 @@ public class Replica extends AbstractReplica {
     // TIMEOUTS MANAGEMENT
     // handle Update message timeout
     public final void handleUpdateTimeout(Messages.UpdateTimeout _msg) throws Exception {
+        // enter election state
+        enterElectionState();
+
         // log info
         Logger.log("Update timeout detected by node " + this.id + ". Starting election protocol.");
 
-        // cancel all timers, not needed anymore
-        cancelAllTimers();
-        
-        // change state: NORMAL -> ELECTION    
-        // this is done by changing the node behaviour using the "message filter" defined in createElectionReceive
-        getContext().become(createElectionReceive());
-
-        // start election
-        startElection();
+        // start election protocol
+        startElectionProtocol();
     }
 
     // handle WriteOk message timeout
     public final void handleWriteOkTimeout(Messages.WriteOkTimeout _msg) throws Exception {
+        // enter election state
+        enterElectionState();
+        
         // log info
         Logger.log("WriteOk timeout detected by node " + this.id + ". Starting election protocol.");
 
-        // cancel all timers, not needed anymore
-        cancelAllTimers();
-        
-        // change state: NORMAL -> ELECTION    
-        // this is done by changing the node behaviour using the "message filter" defined in createElectionReceive
-        getContext().become(createElectionReceive());
-
         // start election
-        startElection();
+        startElectionProtocol();
     }
 
     // HEARTBEAT MANAGEMENT
@@ -410,7 +419,7 @@ public class Replica extends AbstractReplica {
         if (this.id == coordinatorId){ 
             for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
                 if (entry.getKey() != this.id) { // get nodes that are not the cooridnator
-                    entry.getValue().tell(new Messages.Heartbeat(), getSelf()); // tell them coordinator is alive
+                    entry.getValue().tell(new Messages.Heartbeat(), getSelf()); // coordinator tells them it is alive
                 }
             }
         }
@@ -422,18 +431,14 @@ public class Replica extends AbstractReplica {
 
     // handle heartbeat message timeout -> coordinator crashed!
     public final void handleHeartbeatTimeout(Messages.HeartbeatTimeout _msg) throws Exception {
+        // enter election state
+        enterElectionState();
+
         // log info
         Logger.log("Heartbeat timeout detected by node " + this.id + ". Starting election protocol.");
 
-        // cancel all timers, not needed anymore
-        cancelAllTimers();
-        
-        // change state: NORMAL -> ELECTION    
-        // this is done by changing the node behaviour using the "message filter" defined in createElectionReceive
-        getContext().become(createElectionReceive());
-
         // start election
-        startElection();
+        startElectionProtocol();
     }
 
     // utility function to cancel all timers
@@ -441,21 +446,23 @@ public class Replica extends AbstractReplica {
         updateTimer.cancel();
         writeOkTimer.cancel();
         heartbeatTimer.cancel();
+        electionTimer.cancel();
+        electionAckTimer.cancel();
     }
 
     // ELECTION MANAGEMENT  
-    public ActorRef getNextNode(){
-        // hash map cannot be sorted directly, convert group in an array list of the ids
+    // function to get the next node in the ring (returns the ID)
+    public int getNextNodeId(){
+        // group hash map cannot be sorted directly -> convert group in an array list of ids
         List<Integer> sortedGroupIds = new ArrayList<>(this.group.keySet());
 
-        // sort
+        // sort it
         Collections.sort(sortedGroupIds);
 
         // get index in the list of the current node
         int i = sortedGroupIds.indexOf(this.id);
 
-        int nextId = this.id;
-
+        int nextId;
         do{
             // get next index (consider circularity)
             i = (i + 1) % sortedGroupIds.size();
@@ -463,27 +470,129 @@ public class Replica extends AbstractReplica {
             // get corresponding next id in the list
             nextId = sortedGroupIds.get(i);
 
-        } while(nextId == coordinatorId); // ignore coordinatorId
+        } while(nextId == coordinatorId || crashedReplicas.contains(nextId)); // ignore coordinatorId and crashed replicas
         
         // return 
-        return this.group.get(nextId);
+        return nextId;
     }
 
-    public void startElection(){
-        // rest coordinator id
-        this.coordinatorId = -1;
+    public void enterElectionState(){
+        // change state: NORMAL -> ELECTION    
+        // this is done by changing the node behaviour using the "message filter" defined in createElectionReceive
+        getContext().become(createElectionReceive());
+        this.inElection = true;
 
-        // create node message
-        Messages.Election election = new Messages.Election();
+        // cancel all timers, not needed anymore
+        cancelAllTimers();
+    }
+
+    public void startElectionProtocol(){
+        // reset coordinator id
+        coordinatorId = -1;
 
         // append node id and last seen message
-        election.candidates.put(this.id, this.toCommitQueue.lastKey());
+        election.candidates.put(this.id, this.toCommitQueue.lastKey()); // toCommitQueue is a tree map, so is ordered by NodeClock, get latest
 
-        // forward to next node in the ring
-        group.get(this.id).tell(election, getNextNode());
+        // forward message to next node in the ring
+        nextNodeId = getNextNodeId();
+        ActorRef nextNode = this.group.get(nextNodeId);
+        nextNode.tell(election, getSelf());
+
+        // start timer for ack of the receiver
+        electionAckTimer = getContext().system().scheduler().scheduleOnce(
+                Duration.create(timer_duration, TimeUnit.SECONDS), // timer duration
+                getSelf(),                                         // destination (self)
+                new Messages.ElectionAckTimeout(),                 // message that will be received, here ElectionAckTimeout
+                getContext().dispatcher(),                         // dispatcher
+                getSelf()                                          // sender (self)
+        );
+
+        // start timer for the election to end after some time has passed 
+        electionTimer = getContext().system().scheduler().scheduleOnce(
+                Duration.create(timer_duration * group.size(), TimeUnit.SECONDS), // timer duration here is multiplied by the number of replicas to account for a full cycle duration
+                getSelf(),                                                        // destination (self)
+                new Messages.ElectionTimeout(),                                   // message that will be received, here ElectionTimeout
+                getContext().dispatcher(),                                        // dispatcher
+                getSelf()                                                         // sender (self)
+        );
+
+        // log info
+        Logger.log("Election protocol started.");
+    }
+
+
+    public void handleElection(Messages.Election _msg) throws Exception {
+        // save election message
+        this.election = _msg;
+
+        // if node still in NORMAL state, enter ELECTION state
+        if (!inElection){
+            enterElectionState();
+        }
+
+        // ack sender
+        getSender().tell(new Messages.ElectionAck(), getSelf());
+
+        // add own data to the electin message -> append node id and last seen message
+        _msg.candidates.put(this.id, this.toCommitQueue.lastKey()); 
+
+        // forward message to next node in the ring
+        nextNodeId= getNextNodeId();
+        ActorRef nextNode = this.group.get(nextNodeId);
+        nextNode.tell(_msg, getSelf());
+
+        // setup timer for the receiver ack
+        electionAckTimer = getContext().system().scheduler().scheduleOnce(
+                Duration.create(timer_duration, TimeUnit.SECONDS), // timer duration
+                getSelf(),                                         // destination (self)
+                new Messages.ElectionAckTimeout(),                 // message that will be received, here ElectionAckTimeout
+                getContext().dispatcher(),                         // dispatcher
+                getSelf()                                          // sender (self)
+        );
+
+        // start timer for the election to end after some time has passed 
+        electionTimer = getContext().system().scheduler().scheduleOnce(
+                Duration.create(timer_duration * group.size(), TimeUnit.SECONDS), // timer duration here is multiplied by the number of replicas to account for a full cycle duration
+                getSelf(),                                                        // destination (self)
+                new Messages.ElectionTimeout(),                                   // message that will be received, here ElectionTimeout
+                getContext().dispatcher(),                                        // dispatcher
+                getSelf()                                                         // sneder (self)
+        );
 
     }
 
+    public void handleElectionAck(Messages.ElectionAck _msg) throws Exception {
+        // sender of election message can cancel the timer now that it received the ACK
+        electionAckTimer.cancel();
+    }
+
+    public void handleElectionTimeout(Messages.ElectionTimeout _msg) throws Exception {
+       // soemthing went wrong during the election, retry
+       enterElectionState(); // to reset timers
+       startElectionProtocol();
+        
+    }
+
+    public void handleElectionAckTimeout(Messages.ElectionAckTimeout _msg) throws Exception {
+        // ACK to an election message was not received, add node to crashedReplicas
+        crashedReplicas.add(nextNodeId);
+
+        // retry now
+        // forward message to next node in the ring
+        nextNodeId= getNextNodeId();
+        ActorRef nextNode = this.group.get(nextNodeId);
+        nextNode.tell(election, getSelf());
+
+        // setup timer for the receiver ack
+        electionAckTimer = getContext().system().scheduler().scheduleOnce(
+                Duration.create(timer_duration, TimeUnit.SECONDS), // timer duration
+                getSelf(),                                         // destination (self)
+                new Messages.ElectionAckTimeout(),                 // message that will be received, here ElectionAckTimeout
+                getContext().dispatcher(),                         // dispatcher
+                getSelf()                                          // sender (self)
+        );
+
+    }
 
 
 

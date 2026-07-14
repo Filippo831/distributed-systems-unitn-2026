@@ -146,13 +146,6 @@ public class Messages {
         }
     }
 
-    // Create emty classes to handle timeouts
-    public static class HeartbeatTimeout {}
-    public static class UpdateTimeout {}
-    public static class WriteOkTimeout {}
-
-
-
     public static class Heartbeat implements Serializable {
         // empty, just a signal to check if the node is alive
     }
@@ -162,5 +155,17 @@ public class Messages {
         public final Map<Integer, Messages.NodeClock> candidates = new HashMap<>();
 
     }
+
+    public static class ElectionAck implements Serializable {
+        // empty, just a ack election message sender
+    }
     
+    // Create empty classes to handle timeouts
+    public static class HeartbeatTimeout {}
+    public static class UpdateTimeout {}
+    public static class WriteOkTimeout {}
+    public static class ElectionTimeout {}
+    public static class ElectionAckTimeout {}
+    
+
 }
