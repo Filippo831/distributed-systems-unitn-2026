@@ -49,7 +49,7 @@ public class Replica extends AbstractReplica {
     // crashed replicas list
     private Set<Integer> crashedReplicas = new HashSet<>();
 
-    private final int timer_duration = 5;
+    private final int timerDuration = getMaxLatency();
 
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL,
@@ -140,8 +140,7 @@ public class Replica extends AbstractReplica {
             group.get(coordinatorId).tell(forwardMsg, getSelf());
 
             // when the node sends UpdateRequest to the coordinator it starts waiting for the Update message, so the updateTimer is started
-            updateTimer = getContext().system().scheduler().scheduleOnce(
-                Duration.create(timer_duration, TimeUnit.SECONDS), // timer duration
+            updateTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.SECONDS), // timer duration
                 getSelf(),                                         // destination (self)
                 new Messages.UpdateTimeout(),                      // message that will be received, here UpdateTimeout
                 getContext().dispatcher(),                         // dispatcher
@@ -173,8 +172,7 @@ public class Replica extends AbstractReplica {
         group.get(coordinatorId).tell(new Messages.Ack(_msg.clock), getSelf());
 
         // when the node sends ACK to the coordinator it starts waiting for the WriteOk message, so the writeOkTimer is started
-        writeOkTimer = getContext().system().scheduler().scheduleOnce(
-            Duration.create(timer_duration, TimeUnit.SECONDS), // timer duration
+        writeOkTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.SECONDS), // timer duration
             getSelf(),                                         // destination (self)
             new Messages.WriteOkTimeout(),                     // message that will be received, here WriteOkTimeout
             getContext().dispatcher(),                         // dispatcher
@@ -490,6 +488,9 @@ public class Replica extends AbstractReplica {
 
     // change state: NORMAL -> ELECTION
     public void enterElectionState(){    
+        // callback
+        callbackOnElectionStarted(this.coordinatorId);
+
         // this is done by changing the node behaviour using the "message filter" defined in createElectionReceive
         getContext().become(createElectionReceive());
         this.inElection = true;
@@ -511,8 +512,7 @@ public class Replica extends AbstractReplica {
         nextNode.tell(election, getSelf());
 
         // start timer for ack of the receiver
-        electionAckTimer = getContext().system().scheduler().scheduleOnce(
-                Duration.create(timer_duration, TimeUnit.SECONDS), // timer duration
+        electionAckTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.SECONDS), // timer duration
                 getSelf(),                                         // destination (self)
                 new Messages.ElectionAckTimeout(),                 // message that will be received, here ElectionAckTimeout
                 getContext().dispatcher(),                         // dispatcher
@@ -520,8 +520,7 @@ public class Replica extends AbstractReplica {
         );
 
         // start timer for the election to end after some time has passed 
-        electionTimer = getContext().system().scheduler().scheduleOnce(
-                Duration.create(timer_duration * group.size(), TimeUnit.SECONDS), // timer duration here is multiplied by the number of replicas to account for a full cycle duration
+        electionTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration * group.size(), TimeUnit.SECONDS), // timer duration here is multiplied by the number of replicas to account for a full cycle duration
                 getSelf(),                                                        // destination (self)
                 new Messages.ElectionTimeout(),                                   // message that will be received, here ElectionTimeout
                 getContext().dispatcher(),                                        // dispatcher
@@ -559,8 +558,7 @@ public class Replica extends AbstractReplica {
             nextNode.tell(_msg, getSelf());
 
             // setup timer for the receiver ack
-            electionAckTimer = getContext().system().scheduler().scheduleOnce(
-                    Duration.create(timer_duration, TimeUnit.SECONDS), // timer duration
+            electionAckTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.SECONDS), // timer duration
                     getSelf(),                                         // destination (self)
                     new Messages.ElectionAckTimeout(),                 // message that will be received, here ElectionAckTimeout
                     getContext().dispatcher(),                         // dispatcher
@@ -568,8 +566,7 @@ public class Replica extends AbstractReplica {
             );
 
             // start timer for the election to end after some time has passed 
-            electionTimer = getContext().system().scheduler().scheduleOnce(
-                    Duration.create(timer_duration * group.size(), TimeUnit.SECONDS), // timer duration here is multiplied by the number of replicas to account for a full cycle duration
+            electionTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration * group.size(), TimeUnit.SECONDS), // timer duration here is multiplied by the number of replicas to account for a full cycle duration
                     getSelf(),                                                        // destination (self)
                     new Messages.ElectionTimeout(),                                   // message that will be received, here ElectionTimeout
                     getContext().dispatcher(),                                        // dispatcher
@@ -635,6 +632,7 @@ public class Replica extends AbstractReplica {
     public void handleSynchronization(Messages.Synchronization _msg) throws Exception {
         // set new coordinator
         this.coordinatorId = _msg.newCoordId;
+        callbackOnCoordinatorElected(this.coordinatorId);
         
         // get up to date with updates
         for (Map.Entry<Messages.NodeClock, Messages.UpdateData> entry : _msg.coordHistory.entrySet()) {
@@ -686,8 +684,7 @@ public class Replica extends AbstractReplica {
         nextNode.tell(election, getSelf());
 
         // setup timer for the receiver ack
-        electionAckTimer = getContext().system().scheduler().scheduleOnce(
-                Duration.create(timer_duration, TimeUnit.SECONDS), // timer duration
+        electionAckTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.SECONDS), // timer duration
                 getSelf(),                                         // destination (self)
                 new Messages.ElectionAckTimeout(),                 // message that will be received, here ElectionAckTimeout
                 getContext().dispatcher(),                         // dispatcher
