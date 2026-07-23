@@ -273,6 +273,26 @@ public class Replica extends AbstractReplica {
         tell(new AbstractClient.ReadResult(true, _msg.index, value, this.id), _msg.client);
     }
 
+    // FIX: remove this, probabily useless
+    // private final void handleHeartbeat(Messages.Heartbeat _msg) {
+    //     for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
+    //         if (entry.getKey() != this.id) {
+    //             entry.getValue().tell(new Messages.Heartbeat(), getSelf());
+    //         }
+    //     }
+    // }
+    // public final void startCoordinatorHeartbeat() {
+    //     // debug("Replica " + this.id + " starting coordinator heartbeat");
+    //     getContext().getSystem().scheduler().scheduleAtFixedRate(
+    //             Duration.create(getCoordinatorBeatInterval(), TimeUnit.MILLISECONDS),
+    //             Duration.create(getCoordinatorBeatInterval(), TimeUnit.MILLISECONDS),
+    //             getSelf(),
+    //             new Messages.Heartbeat(),
+    //             getContext().dispatcher(),
+    //             getSelf());
+    // }
+
+
     @Override
     public int getSystemNumberOfActors() {
         return group.size();
@@ -295,7 +315,7 @@ public class Replica extends AbstractReplica {
         if (this.id == this.coordinatorId) {
             startCoordinatorHeartbeat();
         } else {
-            resetHeartbeatTimeout();
+            // TODO: implement
         }
 
     }
