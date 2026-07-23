@@ -243,10 +243,6 @@ public class Replica extends AbstractReplica {
                 getSelf());
     }
 
-    private void resetHeartbeatTimeout() {
-        // TODO Auto-generated method stub
-        throw new UnsupportedOperationException("Unimplemented method 'resetHeartbeatTimeout'");
-    }
 
     @Override
     public int getSystemNumberOfActors() {
@@ -266,7 +262,7 @@ public class Replica extends AbstractReplica {
         if (this.id == this.coordinatorId) {
             startCoordinatorHeartbeat();
         } else {
-            resetHeartbeatTimeout();
+            // TODO: implement
         }
 
     }
