@@ -25,18 +25,14 @@ public class Replica extends AbstractReplica {
     private HashMap<Messages.NodeClock, Integer> ackCounters;
 
     // TODO: create a storage systems with pending updates
-    private Map<Messages.NodeClock, Messages.UpdateData> commitHistory;
+    private TreeMap<Messages.NodeClock, Messages.UpdateData> commitHistory;
     private int[] storage = new int[POSITIONS_LIST_LENGTH];
-
     private TreeMap<Messages.NodeClock, Messages.UpdateData> toCommitQueue;
     private ArrayList<Messages.NodeClock> ackedList;
-
     private Map<ActorRef, Messages.NodeClock> myClients = new HashMap<>();
     private Map<Messages.NodeClock, ActorRef> updateClients = new HashMap<>();
-
     private Map<Messages.NodeClock, Messages.UpdateData> coordinatorProposals = new HashMap<>();
 
-    // private Cancellable heartbeatTimeout;
 
     // init timers to detect coordinator crashes
     private Cancellable heartbeatTimer = null; // wait for heartbeat message from coordinator, re-init once received
@@ -52,7 +48,6 @@ public class Replica extends AbstractReplica {
 
     // crashed replicas list
     private Set<Integer> crashedReplicas = new HashSet<>();
-
 
     private final int timer_duration = 5;
 
@@ -280,16 +275,6 @@ public class Replica extends AbstractReplica {
         tell(new AbstractClient.ReadResult(true, _msg.index, value, this.id), _msg.client);
     }
 
-    // private final void handleHeartbeat(Messages.Heartbeat _msg) {
-    //     for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
-    //         if (entry.getKey() != this.id) {
-    //             entry.getValue().tell(new Messages.HeartbeatTimeout(), getSelf());
-    //         }
-    //     }
-    // }
-
-
-
     @Override
     public int getSystemNumberOfActors() {
         return group.size();
@@ -342,9 +327,11 @@ public class Replica extends AbstractReplica {
     // ELECTION state: coordinator crash detected, switched to election state, where we want to handle only the election messages, ignoring updates
     public final Receive createElectionReceive() {
         return createBaseReceiveBuilder()
-                // handle election messages and acks
+                // handle election messages, synch messages and acks
                 .match(Messages.Election.class, this::handleElection)
                 .match(Messages.ElectionAck.class, this::handleElectionAck)
+                .match(Messages.Synchronization.class, this::handleSynchronization)
+
 
                 // also handle the timeouts
                 .match(Messages.ElectionTimeout.class, this::handleElectionTimeout)
@@ -443,11 +430,11 @@ public class Replica extends AbstractReplica {
 
     // utility function to cancel all timers
     public final void cancelAllTimers(){
-        updateTimer.cancel();
-        writeOkTimer.cancel();
-        heartbeatTimer.cancel();
-        electionTimer.cancel();
-        electionAckTimer.cancel();
+        if (updateTimer != null) updateTimer.cancel();
+        if (writeOkTimer != null) writeOkTimer.cancel();
+        if (heartbeatTimer != null) heartbeatTimer.cancel();
+        if (electionTimer != null) electionTimer.cancel();
+        if (electionAckTimer != null) electionAckTimer.cancel();
     }
 
     // ELECTION MANAGEMENT  
@@ -476,8 +463,33 @@ public class Replica extends AbstractReplica {
         return nextId;
     }
 
-    public void enterElectionState(){
-        // change state: NORMAL -> ELECTION    
+    // get ID associated to the most recent update
+    public int getBestId(Messages.Election _msg){
+       int bestId = Integer.MIN_VALUE;
+       Messages.NodeClock bestClock = new Messages.NodeClock(Integer.MIN_VALUE, Integer.MIN_VALUE);
+
+       // cycle on map entries
+       for(Map.Entry<Integer,Messages.NodeClock> entry : _msg.candidates.entrySet()){
+            // check that the replica is not crashed
+            if(!crashedReplicas.contains(entry.getKey())){
+                // check if the entry clock is newer (compare epoch and seqNum)
+                if(entry.getValue().compareTo(bestClock) > 0){
+                    bestClock = entry.getValue();
+                    bestId = entry.getKey();
+                }
+                // if there is a tie, get highest ID
+                else if (entry.getValue().compareTo(bestClock) == 0 && entry.getKey() > bestId) {
+                    bestClock = entry.getValue();
+                    bestId = entry.getKey();
+                }
+            }
+       }
+       return bestId;
+    }
+
+
+    // change state: NORMAL -> ELECTION
+    public void enterElectionState(){    
         // this is done by changing the node behaviour using the "message filter" defined in createElectionReceive
         getContext().become(createElectionReceive());
         this.inElection = true;
@@ -520,45 +532,136 @@ public class Replica extends AbstractReplica {
         Logger.log("Election protocol started.");
     }
 
-
     public void handleElection(Messages.Election _msg) throws Exception {
         // save election message
         this.election = _msg;
 
-        // if node still in NORMAL state, enter ELECTION state
+        // if node still in NORMAL state, enter ELECTION state and handle election message
         if (!inElection){
+            // go to election state
             enterElectionState();
+
+            // ack sender
+            getSender().tell(new Messages.ElectionAck(), getSelf());
+
+            // add own data to the election message -> append node id and last seen message (if all messages have been commited, take it from the commit history)
+            if(!toCommitQueue.isEmpty()){
+                _msg.candidates.put(this.id, this.toCommitQueue.lastKey());
+            }
+            else{
+                _msg.candidates.put(this.id, this.commitHistory.lastKey());
+            }
+             
+
+            // forward message to next node in the ring
+            nextNodeId= getNextNodeId();
+            ActorRef nextNode = this.group.get(nextNodeId);
+            nextNode.tell(_msg, getSelf());
+
+            // setup timer for the receiver ack
+            electionAckTimer = getContext().system().scheduler().scheduleOnce(
+                    Duration.create(timer_duration, TimeUnit.SECONDS), // timer duration
+                    getSelf(),                                         // destination (self)
+                    new Messages.ElectionAckTimeout(),                 // message that will be received, here ElectionAckTimeout
+                    getContext().dispatcher(),                         // dispatcher
+                    getSelf()                                          // sender (self)
+            );
+
+            // start timer for the election to end after some time has passed 
+            electionTimer = getContext().system().scheduler().scheduleOnce(
+                    Duration.create(timer_duration * group.size(), TimeUnit.SECONDS), // timer duration here is multiplied by the number of replicas to account for a full cycle duration
+                    getSelf(),                                                        // destination (self)
+                    new Messages.ElectionTimeout(),                                   // message that will be received, here ElectionTimeout
+                    getContext().dispatcher(),                                        // dispatcher
+                    getSelf()                                                         // sneder (self)
+            );
+        }
+        else {
+            // if the node was already in election, it means the message cycled back to it, therefore it needs to check if it is the best candidate
+            if (this.id == getBestId(_msg)){
+                // if it is, elect it as coordinator 
+                electAsCoordinator(_msg);
+            }
+            else{
+                // forward message to next node in the ring
+                nextNodeId= getNextNodeId();
+                ActorRef nextNode = this.group.get(nextNodeId);
+                nextNode.tell(_msg, getSelf());
+            }
+        }
+    }
+
+    // this function elects the node as the new coordinator and it also handles incomplete updates (no WRITEOK or some received and others did not)
+    public void electAsCoordinator(Messages.Election _msg) throws Exception {
+        // cleanup of timers + setup new cooridnator
+        cancelAllTimers();
+        this.inElection = false;
+
+        // Prepare synchronization message with the id of the new cooridnatore and the up to date message history
+        Messages.Synchronization synchMsg = new Messages.Synchronization();
+        synchMsg.newCoordId = this.id;
+
+        // merge the commited and to commit hystory of the coordinator
+        Map<Messages.NodeClock, Messages.UpdateData> completeHistory = new TreeMap<>(this.commitHistory);
+        for (Map.Entry<Messages.NodeClock, Messages.UpdateData> entry : this.toCommitQueue.entrySet()) {
+           completeHistory.put(entry.getKey(), entry.getValue());
         }
 
-        // ack sender
-        getSender().tell(new Messages.ElectionAck(), getSelf());
+        // complete history contains commited and still uncommitted updates of the coordinator (the most up to date node)
+        synchMsg.coordHistory = completeHistory;
 
-        // add own data to the electin message -> append node id and last seen message
-        _msg.candidates.put(this.id, this.toCommitQueue.lastKey()); 
+        // allow coordinator to commit what's left
+        this.handleSynchronization(synchMsg);  
 
-        // forward message to next node in the ring
-        nextNodeId= getNextNodeId();
-        ActorRef nextNode = this.group.get(nextNodeId);
-        nextNode.tell(_msg, getSelf());
+        // the new coordinator can start new epoch an reset the sequence number 
+        this.epoch++;
+        this.seqNum = 0;
 
-        // setup timer for the receiver ack
-        electionAckTimer = getContext().system().scheduler().scheduleOnce(
-                Duration.create(timer_duration, TimeUnit.SECONDS), // timer duration
-                getSelf(),                                         // destination (self)
-                new Messages.ElectionAckTimeout(),                 // message that will be received, here ElectionAckTimeout
-                getContext().dispatcher(),                         // dispatcher
-                getSelf()                                          // sender (self)
-        );
+        // got to NORMAL state
+        getContext().become(createReceive());
 
-        // start timer for the election to end after some time has passed 
-        electionTimer = getContext().system().scheduler().scheduleOnce(
-                Duration.create(timer_duration * group.size(), TimeUnit.SECONDS), // timer duration here is multiplied by the number of replicas to account for a full cycle duration
-                getSelf(),                                                        // destination (self)
-                new Messages.ElectionTimeout(),                                   // message that will be received, here ElectionTimeout
-                getContext().dispatcher(),                                        // dispatcher
-                getSelf()                                                         // sneder (self)
-        );
+        // restart the heartbeat
+        startCoordinatorHeartbeat();
 
+        // send synchronization message in broadcast to the other replicas
+        for(Map.Entry<Integer,ActorRef> node : group.entrySet()){
+            if(!crashedReplicas.contains(node.getKey()) && node.getKey() != this.id){
+                node.getValue().tell(synchMsg, getSelf());
+            }
+        } 
+    }
+
+    // this function brings all replicas up to date with the updates (it is called also by the coordinator itself to commit what was left in the toCommitQueue before the election)
+    public void handleSynchronization(Messages.Synchronization _msg) throws Exception {
+        // set new coordinator
+        this.coordinatorId = _msg.newCoordId;
+        
+        // get up to date with updates
+        for (Map.Entry<Messages.NodeClock, Messages.UpdateData> entry : _msg.coordHistory.entrySet()) {
+            Messages.NodeClock clock = entry.getKey();
+            Messages.UpdateData data = entry.getValue();
+
+            // check history against most up to date history (from coordinator)
+            if(!this.commitHistory.containsKey(clock)){
+                // if the node is missing some updates apply them
+                this.storage[data.index] = data.value;
+                this.commitHistory.put(clock, data);
+                callbackOnUpdateApplied(data.index, data.value);
+            }
+        }
+        
+        // now that everything is commit with can clear the queues
+        this.ackedList.clear();
+        this.toCommitQueue.clear();
+
+        if(this.id != this.coordinatorId){
+            // from ELECTION state back to NORMAL state
+            this.inElection = false;
+            getContext().become(createReceive());
+
+            // reset heartbeat timer
+            resetHeartbeatTimeout();
+        }
     }
 
     public void handleElectionAck(Messages.ElectionAck _msg) throws Exception {
@@ -570,7 +673,6 @@ public class Replica extends AbstractReplica {
        // soemthing went wrong during the election, retry
        enterElectionState(); // to reset timers
        startElectionProtocol();
-        
     }
 
     public void handleElectionAckTimeout(Messages.ElectionAckTimeout _msg) throws Exception {
@@ -578,9 +680,9 @@ public class Replica extends AbstractReplica {
         crashedReplicas.add(nextNodeId);
 
         // retry now
-        // forward message to next node in the ring
+        // forward message to next node in the ring (now skipping the crashed one)
         nextNodeId= getNextNodeId();
-        ActorRef nextNode = this.group.get(nextNodeId);
+        ActorRef nextNode = this.group.get(nextNodeId); 
         nextNode.tell(election, getSelf());
 
         // setup timer for the receiver ack
@@ -591,10 +693,5 @@ public class Replica extends AbstractReplica {
                 getContext().dispatcher(),                         // dispatcher
                 getSelf()                                          // sender (self)
         );
-
     }
-
-
-
-
 }

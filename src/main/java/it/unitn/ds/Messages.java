@@ -159,6 +159,13 @@ public class Messages {
     public static class ElectionAck implements Serializable {
         // empty, just a ack election message sender
     }
+
+    public static class Synchronization implements Serializable {
+        // new coordinator id
+        public int newCoordId;
+        // this message will contain the coordinator history used by the nodes to get up to date before starting the new epoch
+        public Map<Messages.NodeClock, Messages.UpdateData> coordHistory;
+    }
     
     // Create empty classes to handle timeouts
     public static class HeartbeatTimeout {}
