@@ -168,6 +168,7 @@ public class Messages {
     }
     
     // Create empty classes to handle timeouts
+    // REPLICA timeouts
     public static class HeartbeatTimeout {}
     public static class UpdateTimeout {}
     public static class WriteOkTimeout {}
