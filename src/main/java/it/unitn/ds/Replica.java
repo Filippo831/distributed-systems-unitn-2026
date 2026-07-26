@@ -641,6 +641,7 @@ public class Replica extends AbstractReplica {
         this.seqNum = 0;
 
         // got to NORMAL state
+        cancelAllTimers();
         getContext().become(createReceive());
 
         // restart the heartbeat
@@ -695,7 +696,7 @@ public class Replica extends AbstractReplica {
 
     public void handleElectionTimeout(Messages.ElectionTimeout _msg) throws Exception {
        // soemthing went wrong during the election, retry
-       enterElectionState(); // to reset timers
+       // enterElectionState(); // to reset timers
        startElectionProtocol();
     }
 
