@@ -153,6 +153,8 @@ public class Messages {
     public static class Election {
         // this will contain a map of node id and node clock, where node clock represents last message seen by that node
         public final Map<Integer, Messages.NodeClock> candidates = new HashMap<>();
+        // id of the node that started this election
+        public int starterId = -1;
 
     }
 

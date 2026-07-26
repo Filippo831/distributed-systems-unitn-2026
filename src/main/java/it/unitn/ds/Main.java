@@ -15,9 +15,10 @@ public class Main {
         System.out.println("START");
         System.out.println("========================================\n");
 
-        final int N_REPLICAS = 4;
-        final int COORDINATOR_ID = 1;
+        final int N_REPLICAS = 5;
+        final int COORDINATOR_ID = 0;
         final ActorSystem system = ActorSystem.create("TestMain");
+
 
         Logger.setDestinationStdout();
         Logger.setDebugEnabled(true);

@@ -49,7 +49,7 @@ public class Replica extends AbstractReplica {
     // crashed replicas list
     private Set<Integer> crashedReplicas = new HashSet<>();
 
-    private final int timerDuration = getMaxLatency();
+    private final int timerDuration = getMaxLatency() * 2 + getMinLatency();
 
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL,
@@ -275,25 +275,6 @@ public class Replica extends AbstractReplica {
         tell(new AbstractClient.ReadResult(true, _msg.index, value, this.id), _msg.client);
     }
 
-    // FIX: remove this, probabily useless
-    // private final void handleHeartbeat(Messages.Heartbeat _msg) {
-    //     for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
-    //         if (entry.getKey() != this.id) {
-    //             entry.getValue().tell(new Messages.Heartbeat(), getSelf());
-    //         }
-    //     }
-    // }
-    // public final void startCoordinatorHeartbeat() {
-    //     // debug("Replica " + this.id + " starting coordinator heartbeat");
-    //     getContext().getSystem().scheduler().scheduleAtFixedRate(
-    //             Duration.create(getCoordinatorBeatInterval(), TimeUnit.MILLISECONDS),
-    //             Duration.create(getCoordinatorBeatInterval(), TimeUnit.MILLISECONDS),
-    //             getSelf(),
-    //             new Messages.Heartbeat(),
-    //             getContext().dispatcher(),
-    //             getSelf());
-    // }
-
 
     @Override
     public int getSystemNumberOfActors() {
@@ -313,11 +294,12 @@ public class Replica extends AbstractReplica {
     public void initSystem(InitSystem sysInit) {
         this.group = sysInit.group;
         this.coordinatorId = sysInit.coordinator_id;
-        // TODO: Start heartbeat scheduler if I am the coordinator
         if (this.id == this.coordinatorId) {
+            // if this node is the coordinator, start sending heartbeat messages to the other nodes
             startCoordinatorHeartbeat();
         } else {
-            // TODO: implement
+            // initialize the heartbeat timer if this node is not the coordinator
+            resetHeartbeatTimeout();
         }
 
     }
@@ -477,6 +459,11 @@ public class Replica extends AbstractReplica {
             // get corresponding next id in the list
             nextId = sortedGroupIds.get(i);
 
+            // if the next id is the same as this node id, it means that all other nodes are crashed, so we can break the loop
+            if (nextId == this.id) {
+                break;
+            }
+
         } while(nextId == coordinatorId || crashedReplicas.contains(nextId)); // ignore coordinatorId and crashed replicas
         
         // return 
@@ -527,6 +514,7 @@ public class Replica extends AbstractReplica {
     public void startElectionProtocol(){
         // reset coordinator id
         coordinatorId = -1;
+        election.starterId = this.id;
 
         // append node id and last seen message
         if(!toCommitQueue.isEmpty()){
@@ -568,9 +556,12 @@ public class Replica extends AbstractReplica {
         this.election = _msg;
 
         // if node still in NORMAL state, enter ELECTION state and handle election message
-        if (!inElection){
+        // check if the node that started the election is not the same as this node, otherwise it means the message cycled back to it and it can check if it is the best candidate
+        if (!inElection || _msg.starterId != this.id) {
             // go to election state
-            enterElectionState();
+            if (!inElection) {
+                enterElectionState();
+            }
 
             // ack sender
             getSender().tell(new Messages.ElectionAck(), getSelf());
