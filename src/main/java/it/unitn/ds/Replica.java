@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 
 import akka.actor.ActorRef;
@@ -33,11 +34,15 @@ public class Replica extends AbstractReplica {
     private Map<Messages.NodeClock, ActorRef> updateClients = new HashMap<>();
     private Map<Messages.NodeClock, Messages.UpdateData> coordinatorProposals = new HashMap<>();
 
+    private TreeSet<Messages.NodeClock> readyToCommit = new TreeSet<>();
+
 
     // init timers to detect coordinator crashes
     private Cancellable heartbeatTimer = null; // wait for heartbeat message from coordinator, re-init once received
     private Cancellable updateTimer = null; // starts after forwarding write request to the coordinator, wait for UPDATE message from coordinator
-    private Cancellable writeOkTimer = null; // starts after sending ACK in response to UPDATE message, wait for WRITEOK message from coordinator
+
+    // associate message clock to timer to ensure sequential consistency
+    private Map<Messages.NodeClock, Cancellable> writeOkTimer = new TreeMap<>(); // starts after sending ACK in response to UPDATE message, wait for WRITEOK message from coordinator
 
     // init variable and timer for the election protocol
     Messages.Election election = new Messages.Election(); // election message, will contain coordinator candidates
@@ -95,7 +100,6 @@ public class Replica extends AbstractReplica {
             // THIS IS THE COORDINATOR
             // - forward to other replicas UPDATE MESSAGE
             // - save client in myClients and updateClients with current clock
-
             this.seqNum++;
 
             // define node clock -> each update the coordinator sends is identified by a pair <e, i>
@@ -174,12 +178,14 @@ public class Replica extends AbstractReplica {
         group.get(coordinatorId).tell(new Messages.Ack(_msg.clock), getSelf());
 
         // when the node sends ACK to the coordinator it starts waiting for the WriteOk message, so the writeOkTimer is started
-        writeOkTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.MILLISECONDS), // timer duration
+        Cancellable timer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.MILLISECONDS), // timer duration
             getSelf(),                                         // destination (self)
             new Messages.WriteOkTimeout(),                     // message that will be received, here WriteOkTimeout
             getContext().dispatcher(),                         // dispatcher
             getSelf()                                          // sender (self)
         );
+
+        writeOkTimer.put(_msg.clock, timer);
     }
 
     private final void handleAck(Messages.Ack _msg) throws Exception {
@@ -243,27 +249,46 @@ public class Replica extends AbstractReplica {
         // + " for clock " + _msg.clock);
 
         // received WriteOk message, cancel the WriteOk timer!
-        if (writeOkTimer != null) writeOkTimer.cancel();
+        Cancellable timer = writeOkTimer.remove(_msg.clock); // remove entry from the map
+        if(timer != null) timer.cancel();
 
+        // now this message is ready to be committed
+        readyToCommit.add(_msg.clock);
+        
+        // commit oldest message (readyToCommit and toCommitQueue are ordered!)
+        while(!readyToCommit.isEmpty() && !toCommitQueue.isEmpty() && readyToCommit.first().equals(toCommitQueue.firstKey())){
+            // clock of the message to commit
+            Messages.NodeClock clockToCommit = readyToCommit.first();
 
-        // update internal state with the new values
-        Messages.UpdateData toCommitData = toCommitQueue.remove(_msg.clock);
-        if (toCommitData != null) {
-            commitHistory.put(_msg.clock, toCommitData);
+            // commit and remove from toCommitQueue
+            Messages.UpdateData toCommitData = toCommitQueue.remove(clockToCommit);
+            commitHistory.put(clockToCommit, toCommitData);
             storage[toCommitData.index] = toCommitData.value;
+
+            // remove from readyToCommit set
+            readyToCommit.remove(clockToCommit);
 
             // trigger testing function
             callbackOnUpdateApplied(toCommitData.index, toCommitData.value);
-        }
+        
+       
+        // if (toCommitData != null) {
+        //     commitHistory.put(_msg.clock, toCommitData);
+        //     storage[toCommitData.index] = toCommitData.value;
 
-        ActorRef client = updateClients.remove(_msg.clock);
+        //     // trigger testing function
+        //     callbackOnUpdateApplied(toCommitData.index, toCommitData.value);
+        // }
 
-        if (client != null) {
-            Messages.NodeClock expectedClock = myClients.get(client);
-            if (expectedClock != null && expectedClock.equals(_msg.clock)) {
-                Messages.UpdateData data = commitHistory.get(_msg.clock);
-                tell(new AbstractClient.WriteResult(true, data.index, data.value, this.id), client);
-                myClients.remove(client); // Clean up
+            ActorRef client = updateClients.remove(clockToCommit);
+
+            if (client != null) {
+                Messages.NodeClock expectedClock = myClients.get(client);
+                if (expectedClock != null && expectedClock.equals(clockToCommit)) {
+                    Messages.UpdateData data = commitHistory.get(clockToCommit);
+                    tell(new AbstractClient.WriteResult(true, data.index, data.value, this.id), client);
+                    myClients.remove(client); // Clean up
+                }
             }
         }
     }
@@ -433,10 +458,17 @@ public class Replica extends AbstractReplica {
     // utility function to cancel all timers
     public final void cancelAllTimers(){
         if (updateTimer != null) updateTimer.cancel();
-        if (writeOkTimer != null) writeOkTimer.cancel();
+        //if (writeOkTimer != null) writeOkTimer.cancel();
         if (heartbeatTimer != null) heartbeatTimer.cancel();
         if (electionTimer != null) electionTimer.cancel();
         if (electionAckTimer != null) electionAckTimer.cancel();
+
+        if (writeOkTimer != null) {
+            for (Cancellable timer : writeOkTimer.values()) {
+                timer.cancel();
+            }
+            writeOkTimer.clear();
+        }
     }
 
     // ELECTION MANAGEMENT  
