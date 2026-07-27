@@ -243,7 +243,7 @@ public class Replica extends AbstractReplica {
         // + " for clock " + _msg.clock);
 
         // received WriteOk message, cancel the WriteOk timer!
-        writeOkTimer.cancel();
+        if (writeOkTimer != null) writeOkTimer.cancel();
 
 
         // update internal state with the new values
@@ -354,7 +354,7 @@ public class Replica extends AbstractReplica {
         enterElectionState();
 
         // log info
-        Logger.log("Update timeout detected by node " + this.id + ". Starting election protocol.");
+        log("Update timeout detected by node " + this.id + ". Starting election protocol.");
 
         // start election protocol
         startElectionProtocol();
@@ -366,7 +366,7 @@ public class Replica extends AbstractReplica {
         enterElectionState();
         
         // log info
-        Logger.log("WriteOk timeout detected by node " + this.id + ". Starting election protocol.");
+        log("WriteOk timeout detected by node " + this.id + ". Starting election protocol.");
 
         // start election
         startElectionProtocol();
@@ -424,7 +424,7 @@ public class Replica extends AbstractReplica {
         enterElectionState();
 
         // log info
-        Logger.log("Heartbeat timeout detected by node " + this.id + ". Starting election protocol.");
+        log("Heartbeat timeout detected by node " + this.id + ". Starting election protocol.");
 
         // start election
         startElectionProtocol();
@@ -501,7 +501,9 @@ public class Replica extends AbstractReplica {
         callbackOnElectionStarted(this.coordinatorId);
 
         // add the crashed coordinator to the list of crashed replicas
-        crashedReplicas.add(coordinatorId);
+        if (coordinatorId != -1) {
+            crashedReplicas.add(coordinatorId);
+        }
 
         // this is done by changing the node behaviour using the "message filter" defined in createElectionReceive
         getContext().become(createElectionReceive());
@@ -548,10 +550,16 @@ public class Replica extends AbstractReplica {
         );
 
         // log info
-        Logger.log("Election protocol started.");
+        log("Election protocol started.");
     }
 
     public void handleElection(Messages.Election _msg) throws Exception {
+        log(
+            "Replica " + id +
+            " received Election starter=" + _msg.starterId +
+            " sender=" + getSender() +
+            " candidates=" + _msg.candidates.keySet()
+        );
         // save election message
         this.election = _msg;
 
@@ -581,6 +589,11 @@ public class Replica extends AbstractReplica {
             nextNodeId= getNextNodeId();
             ActorRef nextNode = this.group.get(nextNodeId);
             nextNode.tell(_msg, getSelf());
+
+            debug(
+                "Replica " + id +
+                " forwarding to " + nextNodeId
+            );
 
             // setup timer for the receiver ack
             electionAckTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.MILLISECONDS), // timer duration
@@ -616,6 +629,11 @@ public class Replica extends AbstractReplica {
 
     // this function elects the node as the new coordinator and it also handles incomplete updates (no WRITEOK or some received and others did not)
     public void electAsCoordinator(Messages.Election _msg) throws Exception {
+        debug(
+            "Replica " + id +
+            " elected coordinator"
+        );
+
         // cleanup of timers + setup new cooridnator
         cancelAllTimers();
         this.inElection = false;
@@ -691,12 +709,15 @@ public class Replica extends AbstractReplica {
 
     public void handleElectionAck(Messages.ElectionAck _msg) throws Exception {
         // sender of election message can cancel the timer now that it received the ACK
-        electionAckTimer.cancel();
+        if (electionAckTimer != null) electionAckTimer.cancel();
     }
 
     public void handleElectionTimeout(Messages.ElectionTimeout _msg) throws Exception {
        // soemthing went wrong during the election, retry
        // enterElectionState(); // to reset timers
+       debug(
+            "Election timeout on replica " + id
+        );
        startElectionProtocol();
     }
 
