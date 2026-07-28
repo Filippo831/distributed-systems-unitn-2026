@@ -186,6 +186,15 @@ public class Messages {
     public static class WriteOkTimeout {}
     public static class ElectionTimeout {}
     public static class ElectionAckTimeout {}
+
+    public static class SyncRequest {}
+    public static class SyncReply {
+        Map<NodeClock, UpdateData> history;
+
+        public SyncReply(Map<NodeClock, UpdateData> _history) {
+            history = _history;
+        }
+    }
     
 
 }

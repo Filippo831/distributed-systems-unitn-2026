@@ -35,8 +35,11 @@ public class Replica extends AbstractReplica {
     private Map<Messages.NodeClock, ActorRef> updateClients = new HashMap<>();
     private Map<Messages.NodeClock, Messages.UpdateData> coordinatorProposals = new HashMap<>();
 
-    private TreeSet<Messages.NodeClock> readyToCommit = new TreeSet<>();
+    // Messages waiting for the Update response
+    private Map<String, Messages.UpdateRequest> pendingUpdateRequests = new HashMap<>();
 
+    // Clocks of messages that received WriteOk response and are ready to be committed
+    private TreeSet<Messages.NodeClock> readyToCommit = new TreeSet<>();
 
     // init timers to detect coordinator crashes
     private Cancellable heartbeatTimer = null; // wait for heartbeat message from coordinator, re-init once received
@@ -113,10 +116,12 @@ public class Replica extends AbstractReplica {
             this.coordinatorProposals.put(updateClock, updateData);
 
             updateClients.put(new Messages.NodeClock(this.epoch, this.seqNum), _msg.client);
+            myClients.put(_msg.client, updateClock);
 
-            if (!_msg.fromReplica) {
-                myClients.put(_msg.client, new Messages.NodeClock(this.epoch, this.seqNum));
-            }
+            // CHECK: removed to know who the coordinator has to respond to 
+            // if (!_msg.fromReplica) {
+            //     myClients.put(_msg.client, new Messages.NodeClock(this.epoch, this.seqNum));
+            // }
 
             this.ackCounters.put(updateClock, 1);
             this.toCommitQueue.put(updateClock, updateData);
@@ -128,8 +133,7 @@ public class Replica extends AbstractReplica {
                 requestId = _msg.id;
             }
 
-            // if is the coordinator who received the updateRequest, send an UPDATE to the
-            // replicas
+            // if is the coordinator who received the updateRequest, send an UPDATE to the replicas
             for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
                 if (entry.getKey() != this.id) {
                     entry.getValue()
@@ -147,11 +151,16 @@ public class Replica extends AbstractReplica {
             // myClients -> <ActorRef, Messages.NodeClock> -> NodeClock is null, will be assigned by coordinator
             this.myClients.put(_msg.client, null);
 
-            // Create a unique ID for the request
+            // create a unique ID for the request
             String requestId = this.id + "-" + UUID.randomUUID();
 
-            // Prepare update request
+            // prepare update request
             Messages.UpdateRequest forwardMsg = new Messages.UpdateRequest(_msg.index, _msg.value, _msg.client, true, requestId);
+
+            // add to pending requests
+            pendingUpdateRequests.put(requestId, forwardMsg);
+
+            // send to coordinator
             group.get(coordinatorId).tell(forwardMsg, getSelf());
 
             // when the node sends UpdateRequest to the coordinator it starts waiting for the Update message, so the updateTimer is started
@@ -162,7 +171,7 @@ public class Replica extends AbstractReplica {
                 getSelf()                                          // sender (self)
             );
             
-            // Create update timer, associated with the request ID
+            // create update timer, associated with the request ID
             updateTimers.put(requestId, timer);
         }
     }
@@ -178,9 +187,12 @@ public class Replica extends AbstractReplica {
         //     updateTimer.cancel();
         // }
 
-        // Cancel the timer associeted with that request
+        // cancel the timer associeted with that request
         Cancellable t = updateTimers.remove(_msg.id);
         if (t != null) t.cancel();
+
+        // remove pending UpdateRequest
+        pendingUpdateRequests.remove(_msg.id);
 
         // get node clock assigned by coordinator _msg.clock
         this.toCommitQueue.put(_msg.clock, new Messages.UpdateData(_msg.index, _msg.value));
@@ -708,19 +720,19 @@ public class Replica extends AbstractReplica {
         // complete history contains commited and still uncommitted updates of the coordinator (the most up to date node)
         synchMsg.coordHistory = completeHistory;
 
-        // allow coordinator to commit what's left
-        this.handleSynchronization(synchMsg);  
-
         // the new coordinator can start new epoch an reset the sequence number 
         this.epoch++;
         this.seqNum = 0;
 
+        // allow coordinator to commit what's left
+        this.handleSynchronization(synchMsg);  
+
         // got to NORMAL state
-        cancelAllTimers();
-        getContext().become(createReceive());
+        // cancelAllTimers();
+        //getContext().become(createReceive());
 
         // restart the heartbeat
-        startCoordinatorHeartbeat();
+        //startCoordinatorHeartbeat();
 
         // send synchronization message in broadcast to the other replicas
         for(Map.Entry<Integer,ActorRef> node : group.entrySet()){
@@ -736,7 +748,7 @@ public class Replica extends AbstractReplica {
         this.coordinatorId = _msg.newCoordId;
         callbackOnCoordinatorElected(this.coordinatorId);
         
-        // get up to date with updates
+        // get up to date with updates -> these still have clock in the old view
         for (Map.Entry<Messages.NodeClock, Messages.UpdateData> entry : _msg.coordHistory.entrySet()) {
             Messages.NodeClock clock = entry.getKey();
             Messages.UpdateData data = entry.getValue();
@@ -753,15 +765,65 @@ public class Replica extends AbstractReplica {
         // now that everything is commit with can clear the queues
         this.ackedList.clear();
         this.toCommitQueue.clear();
+        this.readyToCommit.clear();
+        this.ackCounters.clear();
 
-        if(this.id != this.coordinatorId){
+        //if(this.id != this.coordinatorId){
             // from ELECTION state back to NORMAL state
             this.inElection = false;
+            cancelAllTimers();
             getContext().become(createReceive());
 
             // reset heartbeat timer
-            resetHeartbeatTimeout();
-        }
+            if (this.id != this.coordinatorId) {
+                resetHeartbeatTimeout();
+            } else {
+                startCoordinatorHeartbeat();
+            }
+
+            // these will have a clock in the new view
+            resendPendingUpdateRequest();
+        //}
+
+    }
+
+    public void handleSyncRequest() {
+
+        Map<Messages.NodeClock, Messages.UpdateData> history = new TreeMap<>(commitHistory);
+
+        history.putAll(toCommitQueue);
+
+        getSender().tell(
+            new Messages.SyncReply(history),
+            getSelf()
+        );
+    }
+
+    public void handleSyncResponse(Messages.SyncRequest _msg) {
+        // ...
+    }
+
+
+
+    public void resendPendingUpdateRequest(){
+        for (Map.Entry<String, Messages.UpdateRequest> entry : new HashMap<>(pendingUpdateRequests).entrySet()) {
+            Messages.UpdateRequest pendingUpdateRequest = entry.getValue();
+            Boolean fromReplica = true; 
+            if(this.id == coordinatorId) fromReplica = false;
+            Messages.UpdateRequest retry =
+                new Messages.UpdateRequest(
+                        pendingUpdateRequest.index,
+                        pendingUpdateRequest.value,
+                        pendingUpdateRequest.client,
+                        fromReplica,         
+                        entry.getKey());
+
+            try {
+                handleUpdateRequest(retry);
+            } catch (Exception e) {
+                log("Error in retry pending request: " + e.getMessage());
+            }
+        } 
     }
 
     public void handleElectionAck(Messages.ElectionAck _msg) throws Exception {
