@@ -10,6 +10,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import akka.actor.ActorRef;
@@ -39,10 +40,11 @@ public class Replica extends AbstractReplica {
 
     // init timers to detect coordinator crashes
     private Cancellable heartbeatTimer = null; // wait for heartbeat message from coordinator, re-init once received
-    private Cancellable updateTimer = null; // starts after forwarding write request to the coordinator, wait for UPDATE message from coordinator
+    //private Cancellable updateTimer = null; // starts after forwarding write request to the coordinator, wait for UPDATE message from coordinator
 
     // associate message clock to timer to ensure sequential consistency
-    private Map<Messages.NodeClock, Cancellable> writeOkTimer = new TreeMap<>(); // starts after sending ACK in response to UPDATE message, wait for WRITEOK message from coordinator
+    private Map<Messages.NodeClock, Cancellable> writeOkTimers = new TreeMap<>(); // starts after sending ACK in response to UPDATE message, wait for WRITEOK message from coordinator
+    private Map<String, Cancellable> updateTimers = new HashMap<>();
 
     // init variable and timer for the election protocol
     Messages.Election election = new Messages.Election(); // election message, will contain coordinator candidates
@@ -119,14 +121,19 @@ public class Replica extends AbstractReplica {
             this.ackCounters.put(updateClock, 1);
             this.toCommitQueue.put(updateClock, updateData);
 
+            String requestId;
+            if(_msg.id == null){
+                requestId = this.id + "-" + UUID.randomUUID();
+            }else{
+                requestId = _msg.id;
+            }
+
             // if is the coordinator who received the updateRequest, send an UPDATE to the
             // replicas
             for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
                 if (entry.getKey() != this.id) {
                     entry.getValue()
-                            .tell(new Messages.Update(_msg.index, _msg.value,
-                                    new Messages.NodeClock(this.epoch, this.seqNum), _msg.client),
-                                    getSelf());
+                            .tell(new Messages.Update(_msg.index, _msg.value, new Messages.NodeClock(this.epoch, this.seqNum), _msg.client, requestId),getSelf());
                 }
             }
         } else {
@@ -140,16 +147,23 @@ public class Replica extends AbstractReplica {
             // myClients -> <ActorRef, Messages.NodeClock> -> NodeClock is null, will be assigned by coordinator
             this.myClients.put(_msg.client, null);
 
-            Messages.UpdateRequest forwardMsg = new Messages.UpdateRequest(_msg.index, _msg.value, _msg.client, true);
+            // Create a unique ID for the request
+            String requestId = this.id + "-" + UUID.randomUUID();
+
+            // Prepare update request
+            Messages.UpdateRequest forwardMsg = new Messages.UpdateRequest(_msg.index, _msg.value, _msg.client, true, requestId);
             group.get(coordinatorId).tell(forwardMsg, getSelf());
 
             // when the node sends UpdateRequest to the coordinator it starts waiting for the Update message, so the updateTimer is started
-            updateTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.MILLISECONDS), // timer duration
+            Cancellable timer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.MILLISECONDS), // timer duration
                 getSelf(),                                         // destination (self)
                 new Messages.UpdateTimeout(),                      // message that will be received, here UpdateTimeout
                 getContext().dispatcher(),                         // dispatcher
                 getSelf()                                          // sender (self)
             );
+            
+            // Create update timer, associated with the request ID
+            updateTimers.put(requestId, timer);
         }
     }
 
@@ -160,9 +174,13 @@ public class Replica extends AbstractReplica {
         // + _msg.clock);
 
         // received Update message, cancel the Update timer!
-        if (updateTimer != null) {
-            updateTimer.cancel();
-        }
+        // if (updateTimer != null) {
+        //     updateTimer.cancel();
+        // }
+
+        // Cancel the timer associeted with that request
+        Cancellable t = updateTimers.remove(_msg.id);
+        if (t != null) t.cancel();
 
         // get node clock assigned by coordinator _msg.clock
         this.toCommitQueue.put(_msg.clock, new Messages.UpdateData(_msg.index, _msg.value));
@@ -185,7 +203,7 @@ public class Replica extends AbstractReplica {
             getSelf()                                          // sender (self)
         );
 
-        writeOkTimer.put(_msg.clock, timer);
+        writeOkTimers.put(_msg.clock, timer);
     }
 
     private final void handleAck(Messages.Ack _msg) throws Exception {
@@ -249,7 +267,7 @@ public class Replica extends AbstractReplica {
         // + " for clock " + _msg.clock);
 
         // received WriteOk message, cancel the WriteOk timer!
-        Cancellable timer = writeOkTimer.remove(_msg.clock); // remove entry from the map
+        Cancellable timer = writeOkTimers.remove(_msg.clock); // remove entry from the map
         if(timer != null) timer.cancel();
 
         // now this message is ready to be committed
@@ -457,17 +475,24 @@ public class Replica extends AbstractReplica {
 
     // utility function to cancel all timers
     public final void cancelAllTimers(){
-        if (updateTimer != null) updateTimer.cancel();
+        //if (updateTimer != null) updateTimer.cancel();
         //if (writeOkTimer != null) writeOkTimer.cancel();
         if (heartbeatTimer != null) heartbeatTimer.cancel();
         if (electionTimer != null) electionTimer.cancel();
         if (electionAckTimer != null) electionAckTimer.cancel();
 
-        if (writeOkTimer != null) {
-            for (Cancellable timer : writeOkTimer.values()) {
+        if (writeOkTimers != null) {
+            for (Cancellable timer : writeOkTimers.values()) {
                 timer.cancel();
             }
-            writeOkTimer.clear();
+            writeOkTimers.clear();
+        }
+
+        if (updateTimers != null) {
+            for (Cancellable timer : updateTimers.values()) {
+                timer.cancel();
+            }
+            updateTimers.clear();
         }
     }
 
@@ -670,7 +695,7 @@ public class Replica extends AbstractReplica {
         cancelAllTimers();
         this.inElection = false;
 
-        // Prepare synchronization message with the id of the new cooridnatore and the up to date message history
+        // prepare synchronization message with the id of the new coordinator and the up to date message history
         Messages.Synchronization synchMsg = new Messages.Synchronization();
         synchMsg.newCoordId = this.id;
 

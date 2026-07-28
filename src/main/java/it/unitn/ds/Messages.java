@@ -76,15 +76,22 @@ public class Messages {
         public final int index;
         public final int value;
         public final boolean fromReplica;
+        public final String id;
 
         // keep track on who sent the message
         public final ActorRef client;
 
-        public UpdateRequest(int _index, int _value, ActorRef _client, boolean _fromReplica) {
+        public UpdateRequest(int _index, int _value, ActorRef _client, boolean _fromReplica, String _id) {
             index = _index;
             value = _value;
             client = _client;
             fromReplica = _fromReplica;
+            id = _id;
+        }
+
+        // This is needed by clients that don't have/need the request id
+        public UpdateRequest(int index, int value, ActorRef client, boolean fromReplica) {
+            this(index, value, client, fromReplica, null);
         }
     }
 
@@ -121,11 +128,14 @@ public class Messages {
         public final NodeClock clock;
         public final ActorRef client;
 
-        public Update(int _index, int _value, NodeClock _clock, ActorRef _client) {
+         public final String id;
+
+        public Update(int _index, int _value, NodeClock _clock, ActorRef _client, String _id) {
             index = _index;
             value = _value;
             clock = _clock;
             client = _client;
+            id = _id;
         }
     }
 
