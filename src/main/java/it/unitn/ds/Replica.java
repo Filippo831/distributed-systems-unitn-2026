@@ -116,12 +116,12 @@ public class Replica extends AbstractReplica {
             this.coordinatorProposals.put(updateClock, updateData);
 
             updateClients.put(new Messages.NodeClock(this.epoch, this.seqNum), _msg.client);
-            myClients.put(_msg.client, updateClock);
+            //myClients.put(_msg.client, updateClock);
 
             // CHECK: removed to know who the coordinator has to respond to 
-            // if (!_msg.fromReplica) {
-            //     myClients.put(_msg.client, new Messages.NodeClock(this.epoch, this.seqNum));
-            // }
+            if (!_msg.fromReplica) {
+                myClients.put(_msg.client, new Messages.NodeClock(this.epoch, this.seqNum));
+            }
 
             this.ackCounters.put(updateClock, 1);
             this.toCommitQueue.put(updateClock, updateData);
@@ -373,6 +373,8 @@ public class Replica extends AbstractReplica {
                 .match(Messages.WriteOk.class, this::handleWriteOk)
                 .match(Messages.Heartbeat.class, this::handleHeartbeat) // handle heartbeat
 
+                .match(Messages.Election.class, this::handleElection)
+
                 // also handle the timeouts
                 .match(Messages.HeartbeatTimeout.class, this::handleHeartbeatTimeout)
                 .match(Messages.UpdateTimeout.class, this::handleUpdateTimeout)
@@ -583,7 +585,8 @@ public class Replica extends AbstractReplica {
     }
 
     public void startElectionProtocol(){
-        // reset coordinator id
+        // reset election message and coordinator id
+        election = new Messages.Election();
         coordinatorId = -1;
         election.starterId = this.id;
 
@@ -724,12 +727,9 @@ public class Replica extends AbstractReplica {
         this.epoch++;
         this.seqNum = 0;
 
-        // allow coordinator to commit what's left
-        this.handleSynchronization(synchMsg);  
-
         // got to NORMAL state
         // cancelAllTimers();
-        //getContext().become(createReceive());
+        getContext().become(createReceive());
 
         // restart the heartbeat
         //startCoordinatorHeartbeat();
@@ -740,6 +740,10 @@ public class Replica extends AbstractReplica {
                 node.getValue().tell(synchMsg, getSelf());
             }
         } 
+
+        // allow coordinator to commit what's left
+        // put it here so in each coord-replica channel we have synch message before 
+        this.handleSynchronization(synchMsg);  
     }
 
     // this function brings all replicas up to date with the updates (it is called also by the coordinator itself to commit what was left in the toCommitQueue before the election)
@@ -787,35 +791,38 @@ public class Replica extends AbstractReplica {
 
     }
 
-    public void handleSyncRequest() {
+    // public void handleSyncRequest() {
 
-        Map<Messages.NodeClock, Messages.UpdateData> history = new TreeMap<>(commitHistory);
+    //     Map<Messages.NodeClock, Messages.UpdateData> history = new TreeMap<>(commitHistory);
 
-        history.putAll(toCommitQueue);
+    //     history.putAll(toCommitQueue);
 
-        getSender().tell(
-            new Messages.SyncReply(history),
-            getSelf()
-        );
-    }
+    //     getSender().tell(
+    //         new Messages.SyncReply(history),
+    //         getSelf()
+    //     );
+    // }
 
-    public void handleSyncResponse(Messages.SyncRequest _msg) {
-        // ...
-    }
+    // public void handleSyncResponse(Messages.SyncRequest _msg) {
+    //     // ...
+    // }
 
 
 
     public void resendPendingUpdateRequest(){
+        debug(
+        "Replica " + id +
+        " resend pending = " + pendingUpdateRequests.size());
         for (Map.Entry<String, Messages.UpdateRequest> entry : new HashMap<>(pendingUpdateRequests).entrySet()) {
             Messages.UpdateRequest pendingUpdateRequest = entry.getValue();
-            Boolean fromReplica = true; 
-            if(this.id == coordinatorId) fromReplica = false;
+            // Boolean fromReplica = true; 
+            // if(this.id == coordinatorId) fromReplica = false;
             Messages.UpdateRequest retry =
                 new Messages.UpdateRequest(
                         pendingUpdateRequest.index,
                         pendingUpdateRequest.value,
                         pendingUpdateRequest.client,
-                        fromReplica,         
+                        pendingUpdateRequest.fromReplica,         
                         entry.getKey());
 
             try {
