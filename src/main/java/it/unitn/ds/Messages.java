@@ -178,6 +178,17 @@ public class Messages {
         // this message will contain the coordinator history used by the nodes to get up to date before starting the new epoch
         public Map<Messages.NodeClock, Messages.UpdateData> coordHistory;
     }
+
+    public static class UpdateSyncRequest {}
+    public static class UpdateSyncResponse {
+        public Map<Messages.NodeClock, Messages.UpdateData> updateHistory;
+        int id;
+
+        public UpdateSyncResponse(int _id, Map<Messages.NodeClock, Messages.UpdateData> _updateHistory){
+            this.id = _id;
+            this.updateHistory = _updateHistory;
+        }
+    }
     
     // Create empty classes to handle timeouts
     // REPLICA timeouts
@@ -186,16 +197,6 @@ public class Messages {
     public static class WriteOkTimeout {}
     public static class ElectionTimeout {}
     public static class ElectionAckTimeout {}
-
-    public static class SyncRequest {}
-    public static class SyncReply {
-        Map<NodeClock, UpdateData> history;
-
-        public SyncReply(Map<NodeClock, UpdateData> _history) {
-            history = _history;
-        }
-    }
-    
-
+    public static class UpdateSyncTimeout {}
 
 }

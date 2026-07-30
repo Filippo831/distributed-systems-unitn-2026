@@ -61,6 +61,11 @@ public class Replica extends AbstractReplica {
 
     private final int timerDuration = getMaxLatency() * 2 + getMinLatency();
 
+    private Map<Messages.NodeClock, Messages.UpdateData> completeHistory = new TreeMap<>();
+    private Cancellable updateSyncTimer = null;
+    private Set<Integer> updateSyncResponses = new HashSet<>();
+
+
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL,
                 Optional.empty());
@@ -121,6 +126,8 @@ public class Replica extends AbstractReplica {
             // CHECK: removed to know who the coordinator has to respond to 
             if (!_msg.fromReplica) {
                 myClients.put(_msg.client, new Messages.NodeClock(this.epoch, this.seqNum));
+            }else if (myClients.containsKey(_msg.client)) {
+                myClients.put(_msg.client, updateClock);
             }
 
             this.ackCounters.put(updateClock, 1);
@@ -132,6 +139,8 @@ public class Replica extends AbstractReplica {
             }else{
                 requestId = _msg.id;
             }
+
+            pendingUpdateRequests.remove(requestId);
 
             // if is the coordinator who received the updateRequest, send an UPDATE to the replicas
             for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
@@ -373,7 +382,7 @@ public class Replica extends AbstractReplica {
                 .match(Messages.WriteOk.class, this::handleWriteOk)
                 .match(Messages.Heartbeat.class, this::handleHeartbeat) // handle heartbeat
 
-                .match(Messages.Election.class, this::handleElection)
+                //.match(Messages.Election.class, this::handleElection)
 
                 // also handle the timeouts
                 .match(Messages.HeartbeatTimeout.class, this::handleHeartbeatTimeout)
@@ -391,10 +400,16 @@ public class Replica extends AbstractReplica {
                 .match(Messages.ElectionAck.class, this::handleElectionAck)
                 .match(Messages.Synchronization.class, this::handleSynchronization)
 
+                .match(Messages.UpdateSyncRequest.class, this::handleUpdateSyncRequest)
+                .match(Messages.UpdateSyncResponse.class, this::handleUpdateSyncResponse)
+
+
 
                 // also handle the timeouts
                 .match(Messages.ElectionTimeout.class, this::handleElectionTimeout)
                 .match(Messages.ElectionAckTimeout.class, this::handleElectionAckTimeout)
+
+                .match(Messages.UpdateSyncTimeout.class, this::handleUpdateSyncTimeout)
                 .build();
     }
 
@@ -568,6 +583,10 @@ public class Replica extends AbstractReplica {
 
     // change state: NORMAL -> ELECTION
     public void enterElectionState(){    
+        if (this.inElection) {
+            return; 
+        }
+
         // callback
         callbackOnElectionStarted(this.coordinatorId);
 
@@ -582,6 +601,12 @@ public class Replica extends AbstractReplica {
 
         // cancel all timers, not needed anymore
         cancelAllTimers();
+
+        electionTimer = getContext().system().scheduler().scheduleOnce(
+        Duration.create(timerDuration * group.size(), TimeUnit.MILLISECONDS),
+        getSelf(), new Messages.ElectionTimeout(),
+        getContext().dispatcher(), getSelf()
+    );
     }
 
     public void startElectionProtocol(){
@@ -614,12 +639,12 @@ public class Replica extends AbstractReplica {
         );
 
         // start timer for the election to end after some time has passed 
-        electionTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration * group.size(), TimeUnit.MILLISECONDS), // timer duration here is multiplied by the number of replicas to account for a full cycle duration
-                getSelf(),                                                        // destination (self)
-                new Messages.ElectionTimeout(),                                   // message that will be received, here ElectionTimeout
-                getContext().dispatcher(),                                        // dispatcher
-                getSelf()                                                         // sender (self)
-        );
+        // electionTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration * group.size(), TimeUnit.MILLISECONDS), // timer duration here is multiplied by the number of replicas to account for a full cycle duration
+        //         getSelf(),                                                        // destination (self)
+        //         new Messages.ElectionTimeout(),                                   // message that will be received, here ElectionTimeout
+        //         getContext().dispatcher(),                                        // dispatcher
+        //         getSelf()                                                         // sender (self)
+        // );
 
         // log info
         log("Election protocol started.");
@@ -675,13 +700,13 @@ public class Replica extends AbstractReplica {
                     getSelf()                                          // sender (self)
             );
 
-            // start timer for the election to end after some time has passed 
-            electionTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration * group.size(), TimeUnit.MILLISECONDS), // timer duration here is multiplied by the number of replicas to account for a full cycle duration
-                    getSelf(),                                                        // destination (self)
-                    new Messages.ElectionTimeout(),                                   // message that will be received, here ElectionTimeout
-                    getContext().dispatcher(),                                        // dispatcher
-                    getSelf()                                                         // sneder (self)
-            );
+            // // start timer for the election to end after some time has passed 
+            // electionTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration * group.size(), TimeUnit.MILLISECONDS), // timer duration here is multiplied by the number of replicas to account for a full cycle duration
+            //         getSelf(),                                                        // destination (self)
+            //         new Messages.ElectionTimeout(),                                   // message that will be received, here ElectionTimeout
+            //         getContext().dispatcher(),                                        // dispatcher
+            //         getSelf()                                                         // sneder (self)
+            // );
         }
         else {
             getSender().tell(new Messages.ElectionAck(), getSelf());
@@ -701,26 +726,51 @@ public class Replica extends AbstractReplica {
 
     // this function elects the node as the new coordinator and it also handles incomplete updates (no WRITEOK or some received and others did not)
     public void electAsCoordinator(Messages.Election _msg) throws Exception {
-        debug(
-            "Replica " + id +
-            " elected coordinator"
-        );
+        // clean variables
+        updateSyncResponses.clear();
+        completeHistory.clear();
+
+        debug("Replica " + id + " elected coordinator");
 
         // cleanup of timers + setup new cooridnator
         cancelAllTimers();
-        this.inElection = false;
+        //this.inElection = false;
 
+        // merge the commited and to commit hystory of the coordinator
+        // Map<Messages.NodeClock, Messages.UpdateData> completeHistory = new TreeMap<>(this.commitHistory);
+        // for (Map.Entry<Messages.NodeClock, Messages.UpdateData> entry : this.toCommitQueue.entrySet()) {
+        //    completeHistory.put(entry.getKey(), entry.getValue());
+        // }
+        
+        // add rertrival of complete upate history from replicas
+        for(Map.Entry<Integer,ActorRef> node : group.entrySet()){
+            if(!crashedReplicas.contains(node.getKey()) && node.getKey() != this.id){
+                node.getValue().tell(new Messages.UpdateSyncRequest(), getSelf());
+            }
+        } 
+
+        // setup timer for the receiver ack
+        updateSyncTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.MILLISECONDS), // timer duration
+                getSelf(),                                         // destination (self)
+                new Messages.UpdateSyncTimeout(),                  // message that will be received, here UpdateSyncTimeout
+                getContext().dispatcher(),                         // dispatcher
+                getSelf()                                          // sender (self)
+        );
+    }
+
+    private void finishSynchronization() throws Exception{
         // prepare synchronization message with the id of the new coordinator and the up to date message history
         Messages.Synchronization synchMsg = new Messages.Synchronization();
         synchMsg.newCoordId = this.id;
 
-        // merge the commited and to commit hystory of the coordinator
-        Map<Messages.NodeClock, Messages.UpdateData> completeHistory = new TreeMap<>(this.commitHistory);
-        for (Map.Entry<Messages.NodeClock, Messages.UpdateData> entry : this.toCommitQueue.entrySet()) {
-           completeHistory.put(entry.getKey(), entry.getValue());
-        }
+        this.coordinatorId = this.id;
+        callbackOnCoordinatorElected(this.coordinatorId);
 
-        // complete history contains commited and still uncommitted updates of the coordinator (the most up to date node)
+        // add to complte history the coordinator history, now it is complete
+        completeHistory.putAll(commitHistory);
+        completeHistory.putAll(toCommitQueue);
+
+        // complete history contains commited and still uncommitted updates
         synchMsg.coordHistory = completeHistory;
 
         // the new coordinator can start new epoch an reset the sequence number 
@@ -749,8 +799,13 @@ public class Replica extends AbstractReplica {
     // this function brings all replicas up to date with the updates (it is called also by the coordinator itself to commit what was left in the toCommitQueue before the election)
     public void handleSynchronization(Messages.Synchronization _msg) throws Exception {
         // set new coordinator
-        this.coordinatorId = _msg.newCoordId;
-        callbackOnCoordinatorElected(this.coordinatorId);
+        // this.coordinatorId = _msg.newCoordId;
+        // callbackOnCoordinatorElected(this.coordinatorId);
+
+        if (this.coordinatorId != _msg.newCoordId) {
+            this.coordinatorId = _msg.newCoordId;
+            callbackOnCoordinatorElected(_msg.newCoordId);
+        }
         
         // get up to date with updates -> these still have clock in the old view
         for (Map.Entry<Messages.NodeClock, Messages.UpdateData> entry : _msg.coordHistory.entrySet()) {
@@ -791,22 +846,44 @@ public class Replica extends AbstractReplica {
 
     }
 
-    // public void handleSyncRequest() {
+    public void handleUpdateSyncRequest(Messages.UpdateSyncRequest _msg) {
 
-    //     Map<Messages.NodeClock, Messages.UpdateData> history = new TreeMap<>(commitHistory);
+        Map<Messages.NodeClock, Messages.UpdateData> history = new TreeMap<>(commitHistory);
+        history.putAll(toCommitQueue);
 
-    //     history.putAll(toCommitQueue);
+        // now history contains toCommitQueue and commitHistory of the replica and can send it back to the cooridnator
+        getSender().tell(new Messages.UpdateSyncResponse(this.id, history), getSelf());
+    }
 
-    //     getSender().tell(
-    //         new Messages.SyncReply(history),
-    //         getSelf()
-    //     );
-    // }
+    public void handleUpdateSyncResponse(Messages.UpdateSyncResponse _msg) {
+        // add history of the replica to the complete history
+        completeHistory.putAll(_msg.updateHistory);
 
-    // public void handleSyncResponse(Messages.SyncRequest _msg) {
-    //     // ...
-    // }
+        updateSyncResponses.add(_msg.id);
 
+        if(updateSyncResponses.size() == group.size() - 1 - crashedReplicas.size()){
+            updateSyncTimer.cancel();
+            try {
+                finishSynchronization();
+            } catch (Exception ex) {
+                log("Update sync failed (handleUpdateSyncResponse)");
+            }
+        }
+    }
+
+    public void handleUpdateSyncTimeout(Messages.UpdateSyncTimeout _msg) {
+
+        for(Integer id : group.keySet()) {
+            if(id != this.id && !crashedReplicas.contains(id) && !updateSyncResponses.contains(id)) {
+                crashedReplicas.add(id);
+            }
+        }
+        try {
+            finishSynchronization();
+        } catch (Exception ex) {
+            log("Update sync failed (handleUpdateSyncTimeout)");
+        }
+    }
 
 
     public void resendPendingUpdateRequest(){
