@@ -31,7 +31,7 @@ public class Replica extends AbstractReplica {
     private int[] storage = new int[POSITIONS_LIST_LENGTH];
     private TreeMap<Messages.NodeClock, Messages.UpdateData> toCommitQueue;
     private ArrayList<Messages.NodeClock> ackedList;
-    private Map<ActorRef, Messages.NodeClock> myClients = new HashMap<>();
+    private Map<ActorRef, Set<Messages.NodeClock>> myClients = new HashMap<>();
     private Map<Messages.NodeClock, ActorRef> updateClients = new HashMap<>();
     private Map<Messages.NodeClock, Messages.UpdateData> coordinatorProposals = new HashMap<>();
 
@@ -125,9 +125,9 @@ public class Replica extends AbstractReplica {
 
             // CHECK: removed to know who the coordinator has to respond to 
             if (!_msg.fromReplica) {
-                myClients.put(_msg.client, new Messages.NodeClock(this.epoch, this.seqNum));
+                myClients.computeIfAbsent(_msg.client, k -> new HashSet<>()).add(updateClock);
             }else if (myClients.containsKey(_msg.client)) {
-                myClients.put(_msg.client, updateClock);
+                myClients.get(_msg.client).add(updateClock);
             }
 
             this.ackCounters.put(updateClock, 1);
@@ -158,7 +158,7 @@ public class Replica extends AbstractReplica {
 
             // add client ot the list of node clients
             // myClients -> <ActorRef, Messages.NodeClock> -> NodeClock is null, will be assigned by coordinator
-            this.myClients.put(_msg.client, null);
+            this.myClients.computeIfAbsent(_msg.client, k -> new HashSet<>());
 
             // create a unique ID for the request
             String requestId = this.id + "-" + UUID.randomUUID();
@@ -209,8 +209,8 @@ public class Replica extends AbstractReplica {
         updateClients.put(_msg.clock, _msg.client);
 
         // if client is this node's client and the NodeClock associated with the message is still null, must be initialized now that it has the clock value assigned by the coordionator
-        if (myClients.containsKey(_msg.client) && myClients.get(_msg.client) == null) {
-            myClients.put(_msg.client, _msg.clock);
+        if (myClients.containsKey(_msg.client)) {
+            myClients.get(_msg.client).add(_msg.clock);
         }
 
         // send ACK back to the coordinator 
@@ -253,6 +253,7 @@ public class Replica extends AbstractReplica {
                 Messages.UpdateData dataToCommit = this.toCommitQueue.remove(clockToCommit);
 
                 if (dataToCommit != null) {
+                    // persist the values on the storage
                     this.commitHistory.put(clockToCommit, dataToCommit);
                     this.storage[dataToCommit.index] = dataToCommit.value;
 
@@ -265,14 +266,15 @@ public class Replica extends AbstractReplica {
                         }
                     }
 
+                    // send the writeOk to the client if it is this node's client
                     ActorRef client = updateClients.remove(clockToCommit);
                     if (client != null) {
-                        Messages.NodeClock expectedClock = myClients.get(client);
-                        if (expectedClock != null && expectedClock.equals(clockToCommit)) {
+                        Set<Messages.NodeClock> pending = myClients.get(client);
+                        if (pending != null && pending.remove(clockToCommit)) {
                             Messages.UpdateData clientData = commitHistory.get(clockToCommit);
                             tell(new AbstractClient.WriteResult(true, clientData.index, clientData.value, this.id),
                                     client);
-                            myClients.remove(client);
+                            if (pending.isEmpty()) myClients.remove(client);
                         }
                     }
 
@@ -322,11 +324,11 @@ public class Replica extends AbstractReplica {
             ActorRef client = updateClients.remove(clockToCommit);
 
             if (client != null) {
-                Messages.NodeClock expectedClock = myClients.get(client);
-                if (expectedClock != null && expectedClock.equals(clockToCommit)) {
+                Set<Messages.NodeClock> pending = myClients.get(client);
+                if (pending != null && pending.remove(clockToCommit)) {
                     Messages.UpdateData data = commitHistory.get(clockToCommit);
                     tell(new AbstractClient.WriteResult(true, data.index, data.value, this.id), client);
-                    myClients.remove(client); // Clean up
+                    if (pending.isEmpty()) myClients.remove(client);
                 }
             }
         }
@@ -382,7 +384,7 @@ public class Replica extends AbstractReplica {
                 .match(Messages.WriteOk.class, this::handleWriteOk)
                 .match(Messages.Heartbeat.class, this::handleHeartbeat) // handle heartbeat
 
-                //.match(Messages.Election.class, this::handleElection)
+                .match(Messages.Election.class, this::handleElection)
 
                 // also handle the timeouts
                 .match(Messages.HeartbeatTimeout.class, this::handleHeartbeatTimeout)
@@ -821,11 +823,12 @@ public class Replica extends AbstractReplica {
             }
         }
         
-        // now that everything is commit with can clear the queues
+        // now that everything is commit we can clear the queues
         this.ackedList.clear();
         this.toCommitQueue.clear();
         this.readyToCommit.clear();
         this.ackCounters.clear();
+        this.myClients.clear();
 
         //if(this.id != this.coordinatorId){
             // from ELECTION state back to NORMAL state
