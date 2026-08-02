@@ -465,10 +465,13 @@ public class Replica extends AbstractReplica {
         if(heartbeatTimer != null){
             heartbeatTimer.cancel();
         }
-        
+
+        // staggering time applied to the heartbeat timeout to avoid all nodes to fire the timeout at the same time
+        int staggeringTime = (int) (this.id * (500.0 / group.size())); 
+
         // start new one
         heartbeatTimer = getContext().system().scheduler().scheduleOnce(
-            Duration.create(getCoordinatorBeatInterval() * 2, TimeUnit.MILLISECONDS), // timer duration here depends on coordinator heartbeat duration
+            Duration.create(getCoordinatorBeatInterval() * 2 + staggeringTime, TimeUnit.MILLISECONDS), // timer duration here depends on coordinator heartbeat duration
             getSelf(),                                                                // destination (self)
             new Messages.HeartbeatTimeout(),                                          // message that will be received, here HeartbeatTimeout
             getContext().dispatcher(),                                                // dispatcher
@@ -664,7 +667,8 @@ public class Replica extends AbstractReplica {
 
         // if node still in NORMAL state, enter ELECTION state and handle election message
         // check if the node that started the election is not the same as this node, otherwise it means the message cycled back to it and it can check if it is the best candidate
-        if (!inElection || _msg.starterId != this.id) {
+        // if (!inElection || _msg.starterId != this.id) {
+        if (!inElection) {
             // go to election state
             if (!inElection) {
                 enterElectionState();
