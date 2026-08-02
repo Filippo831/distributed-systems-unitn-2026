@@ -832,7 +832,6 @@ public class Replica extends AbstractReplica {
         this.toCommitQueue.clear();
         this.readyToCommit.clear();
         this.ackCounters.clear();
-        this.myClients.clear();
 
         //if(this.id != this.coordinatorId){
             // from ELECTION state back to NORMAL state
