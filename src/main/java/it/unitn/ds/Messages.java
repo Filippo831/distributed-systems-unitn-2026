@@ -1,6 +1,8 @@
 package it.unitn.ds;
 
 import java.io.Serializable;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 
 import akka.actor.ActorRef;
@@ -74,15 +76,22 @@ public class Messages {
         public final int index;
         public final int value;
         public final boolean fromReplica;
+        public final String id;
 
         // keep track on who sent the message
         public final ActorRef client;
 
-        public UpdateRequest(int _index, int _value, ActorRef _client, boolean _fromReplica) {
+        public UpdateRequest(int _index, int _value, ActorRef _client, boolean _fromReplica, String _id) {
             index = _index;
             value = _value;
             client = _client;
             fromReplica = _fromReplica;
+            id = _id;
+        }
+
+        // This is needed by clients that don't have/need the request id
+        public UpdateRequest(int index, int value, ActorRef client, boolean fromReplica) {
+            this(index, value, client, fromReplica, null);
         }
     }
 
@@ -119,11 +128,14 @@ public class Messages {
         public final NodeClock clock;
         public final ActorRef client;
 
-        public Update(int _index, int _value, NodeClock _clock, ActorRef _client) {
+         public final String id;
+
+        public Update(int _index, int _value, NodeClock _clock, ActorRef _client, String _id) {
             index = _index;
             value = _value;
             clock = _clock;
             client = _client;
+            id = _id;
         }
     }
 
@@ -147,4 +159,44 @@ public class Messages {
     public static class Heartbeat implements Serializable {
         // empty, just a signal to check if the node is alive
     }
+
+    public static class Election {
+        // this will contain a map of node id and node clock, where node clock represents last message seen by that node
+        public final Map<Integer, Messages.NodeClock> candidates = new HashMap<>();
+        // id of the node that started this election
+        public int starterId = -1;
+
+    }
+
+    public static class ElectionAck implements Serializable {
+        // empty, just a ack election message sender
+    }
+
+    public static class Synchronization implements Serializable {
+        // new coordinator id
+        public int newCoordId;
+        // this message will contain the coordinator history used by the nodes to get up to date before starting the new epoch
+        public Map<Messages.NodeClock, Messages.UpdateData> coordHistory;
+    }
+
+    public static class UpdateSyncRequest {}
+    public static class UpdateSyncResponse {
+        public Map<Messages.NodeClock, Messages.UpdateData> updateHistory;
+        int id;
+
+        public UpdateSyncResponse(int _id, Map<Messages.NodeClock, Messages.UpdateData> _updateHistory){
+            this.id = _id;
+            this.updateHistory = _updateHistory;
+        }
+    }
+    
+    // Create empty classes to handle timeouts
+    // REPLICA timeouts
+    public static class HeartbeatTimeout {}
+    public static class UpdateTimeout {}
+    public static class WriteOkTimeout {}
+    public static class ElectionTimeout {}
+    public static class ElectionAckTimeout {}
+    public static class UpdateSyncTimeout {}
+
 }

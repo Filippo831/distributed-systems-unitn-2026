@@ -41,5 +41,8 @@ compileJava {
 }
 
 run {
+    if (project.hasProperty('execMain')) {
+        application.mainClass = project.getProperty('execMain')
+    }
     standardInput = System.in
 }
