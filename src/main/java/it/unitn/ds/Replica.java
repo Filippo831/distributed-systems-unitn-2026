@@ -1,70 +1,55 @@
 package it.unitn.ds;
 
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.TreeSet;
-import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
+import akka.actor.ActorContext;
 import akka.actor.ActorRef;
 import akka.actor.Cancellable;
 import akka.actor.Props;
+import it.unitn.ds.ReplicaManagers.ElectionManager;
+import it.unitn.ds.ReplicaManagers.HeartbeatManager;
+import it.unitn.ds.ReplicaManagers.SyncManager;
+import it.unitn.ds.ReplicaManagers.UpdateManager;
 import scala.concurrent.duration.Duration;
 
 public class Replica extends AbstractReplica {
-    private Map<Integer, ActorRef> group; // maps node Id and node "address", contains all replicas, also coordinator
-    private int coordinatorId;
 
-    private int epoch;
-    private int seqNum;
-    private HashMap<Messages.NodeClock, Integer> ackCounters;
+    // =================================================================================
+    // Shared state with the managers
+    // =================================================================================
 
-    // TODO: create a storage systems with pending updates
-    private TreeMap<Messages.NodeClock, Messages.UpdateData> commitHistory;
-    private int[] storage = new int[POSITIONS_LIST_LENGTH];
-    private TreeMap<Messages.NodeClock, Messages.UpdateData> toCommitQueue;
-    private ArrayList<Messages.NodeClock> ackedList;
-    private Map<ActorRef, Set<Messages.NodeClock>> myClients = new HashMap<>();
-    private Map<Messages.NodeClock, ActorRef> updateClients = new HashMap<>();
-    private Map<Messages.NodeClock, Messages.UpdateData> coordinatorProposals = new HashMap<>();
+    // maps node Id and node "address", contains all replicas, also coordinator
+    public Map<Integer, ActorRef> group;
+    public int coordinatorId;
 
-    // Messages waiting for the Update response
-    private Map<String, Messages.UpdateRequest> pendingUpdateRequests = new HashMap<>();
+    public int epoch;
+    public int seqNum;
 
-    // Clocks of messages that received WriteOk response and are ready to be committed
-    private TreeSet<Messages.NodeClock> readyToCommit = new TreeSet<>();
+    // persistent storage of applied updates, kept in commit order
+    public TreeMap<Messages.NodeClock, Messages.UpdateData> commitHistory;
+    public int[] storage = new int[POSITIONS_LIST_LENGTH];
 
-    // init timers to detect coordinator crashes
-    private Cancellable heartbeatTimer = null; // wait for heartbeat message from coordinator, re-init once received
-    //private Cancellable updateTimer = null; // starts after forwarding write request to the coordinator, wait for UPDATE message from coordinator
+    // updates still waiting to be committed (in coordinator-assigned order)
+    public TreeMap<Messages.NodeClock, Messages.UpdateData> toCommitQueue;
 
-    // associate message clock to timer to ensure sequential consistency
-    private Map<Messages.NodeClock, Cancellable> writeOkTimers = new TreeMap<>(); // starts after sending ACK in response to UPDATE message, wait for WRITEOK message from coordinator
-    private Map<String, Cancellable> updateTimers = new HashMap<>();
+    // replicas that are known to have crashed
+    public Set<Integer> crashedReplicas = new HashSet<>();
 
-    // init variable and timer for the election protocol
-    Messages.Election election = new Messages.Election(); // election message, will contain coordinator candidates
-    private Cancellable electionAckTimer = null; // starts after forwarding election message to the next node in the ring, wait for ACK  message from receiver
-    private Cancellable electionTimer = null; // starts after forwarding election message to the next node in the ring, wait for the end of the election protocol
-    private boolean inElection = false; // varibale to know if the replica is in election
-    private int nextNodeId;
+    public final int timerDuration = getMaxLatency() * 2 + getMinLatency();
 
-    // crashed replicas list
-    private Set<Integer> crashedReplicas = new HashSet<>();
-
-    private final int timerDuration = getMaxLatency() * 2 + getMinLatency();
-
-    private Map<Messages.NodeClock, Messages.UpdateData> completeHistory = new TreeMap<>();
-    private Cancellable updateSyncTimer = null;
-    private Set<Integer> updateSyncResponses = new HashSet<>();
-
+    // =================================================================================
+    // Managers
+    // =================================================================================
+    private final UpdateManager updateManager;
+    private final ElectionManager electionManager;
+    private final SyncManager syncManager;
+    private final HeartbeatManager heartbeatManager;
 
     public Replica(int id) {
         this(id, AbstractReplica.MIN_LATENCY, AbstractReplica.MAX_LATENCY, AbstractReplica.COORDINATOR_BEAT_INTERVAL,
@@ -74,18 +59,19 @@ public class Replica extends AbstractReplica {
     public Replica(int id, int minLatency, int maxLatency, int coordinatorBeatInterval, Optional<ActorRef> listener) {
         super(id, minLatency, maxLatency, coordinatorBeatInterval, listener);
 
-        // TODO: add all the initialization code you need here
         this.group = new HashMap<>();
         this.coordinatorId = -1;
 
         this.epoch = 0;
         this.seqNum = 0;
 
-        this.ackCounters = new HashMap<>();
         this.commitHistory = new TreeMap<>();
-
         this.toCommitQueue = new TreeMap<>();
-        this.ackedList = new ArrayList<>();
+
+        this.updateManager = new UpdateManager(this);
+        this.heartbeatManager = new HeartbeatManager(this);
+        this.electionManager = new ElectionManager(this);
+        this.syncManager = new SyncManager(this);
     }
 
     public static Props props(int id, int minLatency, int maxLatency, int coordinatorBeatInterval) {
@@ -100,247 +86,106 @@ public class Replica extends AbstractReplica {
                 () -> new Replica(id, minLatency, maxLatency, coordinatorBeatInterval, Optional.ofNullable(listener)));
     }
 
-    // handling of the UpdateRequest message
-    // - coordinator actions -> handle request + forward Update message
-    // - replica actions -> forward message to coordinator + handle Update timer 
-    private final void handleUpdateRequest(Messages.UpdateRequest _msg) throws Exception {
-        if (this.id == coordinatorId) {
-            // debug("Replica " + this.id + " is the coordinator and received UpdateRequest
-            // from client " + _msg.client);
-            // THIS IS THE COORDINATOR
-            // - forward to other replicas UPDATE MESSAGE
-            // - save client in myClients and updateClients with current clock
-            this.seqNum++;
+    // =================================================================================
+    // Actor accessors (exposed so the managers can use actor internals)
+    // =================================================================================
 
-            // define node clock -> each update the coordinator sends is identified by a pair <e, i>
-            Messages.NodeClock updateClock = new Messages.NodeClock(this.epoch, this.seqNum);
+    public ActorRef getSelfRef() {
+        return getSelf();
+    }
 
-            Messages.UpdateData updateData = new Messages.UpdateData(_msg.index, _msg.value);
+    public ActorRef getSenderRef() {
+        return getSender();
+    }
 
-            // save the value of the update to later make it persistent for coordinator
-            this.coordinatorProposals.put(updateClock, updateData);
+    public ActorContext actorContext() {
+        return getContext();
+    }
 
-            updateClients.put(new Messages.NodeClock(this.epoch, this.seqNum), _msg.client);
-            //myClients.put(_msg.client, updateClock);
+    // Public wrappers around the package-private helpers of AbstractReplica,
+    // so the managers (which live in the ReplicaManagers package) can use them
+    public int getId() {
+        return id;
+    }
 
-            // CHECK: removed to know who the coordinator has to respond to 
-            if (!_msg.fromReplica) {
-                myClients.computeIfAbsent(_msg.client, k -> new HashSet<>()).add(updateClock);
-            }else if (myClients.containsKey(_msg.client)) {
-                myClients.get(_msg.client).add(updateClock);
+    public void sendTo(java.io.Serializable m, ActorRef dst) {
+        tell(m, dst);
+    }
+
+    public void logInfo(String msg) {
+        log(msg);
+    }
+
+    public void debugInfo(String msg) {
+        debug(msg);
+    }
+
+    public void onCoordinatorElected(int newCoordinatorId) {
+        callbackOnCoordinatorElected(newCoordinatorId);
+    }
+
+    public void onUpdateApplied(int index, int value) {
+        callbackOnUpdateApplied(index, value);
+    }
+
+    public void onElectionStarted(int crashedCoordinatorId) {
+        callbackOnElectionStarted(crashedCoordinatorId);
+    }
+
+    // Manager getters, used by the managers to cooperate (e.g. sync -> update)
+    public UpdateManager updateManager() {
+        return updateManager;
+    }
+
+    public ElectionManager electionManager() {
+        return electionManager;
+    }
+
+    public SyncManager syncManager() {
+        return syncManager;
+    }
+
+    public HeartbeatManager heartbeatManager() {
+        return heartbeatManager;
+    }
+
+    // Helper function to broadcast a message to all replicas in the group except
+    // itself
+    public final void broadcast(Object message) {
+        for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
+            if (entry.getKey() != this.id) {
+                entry.getValue().tell(message, getSelf());
             }
-
-            this.ackCounters.put(updateClock, 1);
-            this.toCommitQueue.put(updateClock, updateData);
-
-            String requestId;
-            if(_msg.id == null){
-                requestId = this.id + "-" + UUID.randomUUID();
-            }else{
-                requestId = _msg.id;
-            }
-
-            pendingUpdateRequests.remove(requestId);
-
-            // if is the coordinator who received the updateRequest, send an UPDATE to the replicas
-            for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
-                if (entry.getKey() != this.id) {
-                    entry.getValue()
-                            .tell(new Messages.Update(_msg.index, _msg.value, new Messages.NodeClock(this.epoch, this.seqNum), _msg.client, requestId),getSelf());
-                }
-            }
-        } else {
-            // THIS IS NOT THE COORDINATOR
-            // - forward the request to the coordinator
-            // - add client to the list of clients without clock
-            // debug("Replica " + this.id + " forwarding UpdateRequest to coordinator " +
-            // coordinatorId);
-
-            // add client ot the list of node clients
-            // myClients -> <ActorRef, Messages.NodeClock> -> NodeClock is null, will be assigned by coordinator
-            this.myClients.computeIfAbsent(_msg.client, k -> new HashSet<>());
-
-            // create a unique ID for the request
-            String requestId = this.id + "-" + UUID.randomUUID();
-
-            // prepare update request
-            Messages.UpdateRequest forwardMsg = new Messages.UpdateRequest(_msg.index, _msg.value, _msg.client, true, requestId);
-
-            // add to pending requests
-            pendingUpdateRequests.put(requestId, forwardMsg);
-
-            // send to coordinator
-            group.get(coordinatorId).tell(forwardMsg, getSelf());
-
-            // when the node sends UpdateRequest to the coordinator it starts waiting for the Update message, so the updateTimer is started
-            Cancellable timer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.MILLISECONDS), // timer duration
-                getSelf(),                                         // destination (self)
-                new Messages.UpdateTimeout(),                      // message that will be received, here UpdateTimeout
-                getContext().dispatcher(),                         // dispatcher
-                getSelf()                                          // sender (self)
-            );
-            
-            // create update timer, associated with the request ID
-            updateTimers.put(requestId, timer);
         }
     }
 
-    // handle Update message (nodes)
-    private final void handleUpdate(Messages.Update _msg) throws Exception {
-        // debug("Replica " + this.id + " received Update from coordinator " +
-        // coordinatorId + " with clock "
-        // + _msg.clock);
-
-        // received Update message, cancel the Update timer!
-        // if (updateTimer != null) {
-        //     updateTimer.cancel();
-        // }
-
-        // cancel the timer associeted with that request
-        Cancellable t = updateTimers.remove(_msg.id);
-        if (t != null) t.cancel();
-
-        // remove pending UpdateRequest
-        pendingUpdateRequests.remove(_msg.id);
-
-        // get node clock assigned by coordinator _msg.clock
-        this.toCommitQueue.put(_msg.clock, new Messages.UpdateData(_msg.index, _msg.value));
-
-        updateClients.put(_msg.clock, _msg.client);
-
-        // if client is this node's client and the NodeClock associated with the message is still null, must be initialized now that it has the clock value assigned by the coordionator
-        if (myClients.containsKey(_msg.client)) {
-            myClients.get(_msg.client).add(_msg.clock);
-        }
-
-        // send ACK back to the coordinator 
-        group.get(coordinatorId).tell(new Messages.Ack(_msg.clock), getSelf());
-
-        // when the node sends ACK to the coordinator it starts waiting for the WriteOk message, so the writeOkTimer is started
-        Cancellable timer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.MILLISECONDS), // timer duration
-            getSelf(),                                         // destination (self)
-            new Messages.WriteOkTimeout(),                     // message that will be received, here WriteOkTimeout
-            getContext().dispatcher(),                         // dispatcher
-            getSelf()                                          // sender (self)
+    // Helper function to crate an object timer
+    public final Cancellable createTimer(Object message, long duration) {
+        return getContext().system().scheduler().scheduleOnce(
+                Duration.create(duration, TimeUnit.MILLISECONDS), // timer duration
+                getSelf(), // destination (self)
+                message, // message that will be received
+                getContext().dispatcher(), // dispatcher
+                getSelf() // sender (self)
         );
-
-        writeOkTimers.put(_msg.clock, timer);
     }
 
-    private final void handleAck(Messages.Ack _msg) throws Exception {
-        // debug("Replica " + this.id + " received Ack from replica " + getSender() + "
-        // for clock " + _msg.clock);
-
-        // incerment number of received ack for the _msg.NodeClock
-        int currentCount = this.ackCounters.getOrDefault(_msg.clock, 0);
-        currentCount++;
-        this.ackCounters.put(_msg.clock, currentCount);
-
-        // if number of ack received >= (N/2 + 1) [quorum] add the clock to the
-        // ackdeList
-        if (this.ackCounters.get(_msg.clock) >= (Math.floor(group.size() / 2) + 1)) {
-            // keep track of the acked clocks to later commit them in order
-            if (!this.ackedList.contains(_msg.clock)) {
-                this.ackedList.add(_msg.clock);
-                this.ackedList.sort((a, b) -> a.compareTo(b));
-            }
-            // iterate until the smallest clock in the ackedList is not the first in the
-            // toCommitQueue.
-            while (!this.ackedList.isEmpty() && !this.toCommitQueue.isEmpty()
-                    && this.ackedList.get(0).equals(this.toCommitQueue.firstKey())) {
-
-                Messages.NodeClock clockToCommit = this.ackedList.remove(0);
-                Messages.UpdateData dataToCommit = this.toCommitQueue.remove(clockToCommit);
-
-                if (dataToCommit != null) {
-                    // persist the values on the storage
-                    this.commitHistory.put(clockToCommit, dataToCommit);
-                    this.storage[dataToCommit.index] = dataToCommit.value;
-
-                    callbackOnUpdateApplied(dataToCommit.index, dataToCommit.value);
-
-                    // send the writeOk to all the others
-                    for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
-                        if (entry.getKey() != this.id) {
-                            entry.getValue().tell(new Messages.WriteOk(clockToCommit), getSelf());
-                        }
-                    }
-
-                    // send the writeOk to the client if it is this node's client
-                    ActorRef client = updateClients.remove(clockToCommit);
-                    if (client != null) {
-                        Set<Messages.NodeClock> pending = myClients.get(client);
-                        if (pending != null && pending.remove(clockToCommit)) {
-                            Messages.UpdateData clientData = commitHistory.get(clockToCommit);
-                            tell(new AbstractClient.WriteResult(true, clientData.index, clientData.value, this.id),
-                                    client);
-                            if (pending.isEmpty()) myClients.remove(client);
-                        }
-                    }
-
-                    this.ackCounters.remove(clockToCommit);
-                }
-            }
-        }
-        // TODO: handle timeout (I guess)
+    // utility function to cancel all timers
+    public final void cancelAllTimers() {
+        heartbeatManager.cancelTimers();
+        electionManager.cancelTimers();
+        updateManager.cancelTimers();
     }
 
-    private final void handleWriteOk(Messages.WriteOk _msg) throws Exception {
-        // debug("Replica " + this.id + " received WriteOk from replica " + getSender()
-        // + " for clock " + _msg.clock);
-
-        // received WriteOk message, cancel the WriteOk timer!
-        Cancellable timer = writeOkTimers.remove(_msg.clock); // remove entry from the map
-        if(timer != null) timer.cancel();
-
-        // now this message is ready to be committed
-        readyToCommit.add(_msg.clock);
-        
-        // commit oldest message (readyToCommit and toCommitQueue are ordered!)
-        while(!readyToCommit.isEmpty() && !toCommitQueue.isEmpty() && readyToCommit.first().equals(toCommitQueue.firstKey())){
-            // clock of the message to commit
-            Messages.NodeClock clockToCommit = readyToCommit.first();
-
-            // commit and remove from toCommitQueue
-            Messages.UpdateData toCommitData = toCommitQueue.remove(clockToCommit);
-            commitHistory.put(clockToCommit, toCommitData);
-            storage[toCommitData.index] = toCommitData.value;
-
-            // remove from readyToCommit set
-            readyToCommit.remove(clockToCommit);
-
-            // trigger testing function
-            callbackOnUpdateApplied(toCommitData.index, toCommitData.value);
-        
-       
-        // if (toCommitData != null) {
-        //     commitHistory.put(_msg.clock, toCommitData);
-        //     storage[toCommitData.index] = toCommitData.value;
-
-        //     // trigger testing function
-        //     callbackOnUpdateApplied(toCommitData.index, toCommitData.value);
-        // }
-
-            ActorRef client = updateClients.remove(clockToCommit);
-
-            if (client != null) {
-                Set<Messages.NodeClock> pending = myClients.get(client);
-                if (pending != null && pending.remove(clockToCommit)) {
-                    Messages.UpdateData data = commitHistory.get(clockToCommit);
-                    tell(new AbstractClient.WriteResult(true, data.index, data.value, this.id), client);
-                    if (pending.isEmpty()) myClients.remove(client);
-                }
-            }
-        }
-    }
+    // =================================================================================
+    // Read path
+    // =================================================================================
 
     private final void handleReadRequest(Messages.ReadRequest _msg) {
         int value = storage[_msg.index];
-        // _msg.client.tell(new Messages.ReadResponse(_msg.index, value, this.id),
-        // getSelf());
+
         tell(new AbstractClient.ReadResult(true, _msg.index, value, this.id), _msg.client);
     }
-
 
     @Override
     public int getSystemNumberOfActors() {
@@ -349,8 +194,9 @@ public class Replica extends AbstractReplica {
 
     @Override
     public void crash(AbstractReplica.Crash how_to_crash) {
-        // change state: NORMAL/ELECTION -> CRASH    
-        // this is done by changing the node behaviour using the "message filter" defined in createCrashedReceive
+        // change state: NORMAL/ELECTION -> CRASH
+        // this is done by changing the node behaviour using the "message filter"
+        // defined in createCrashedReceive
         // this way it stops handling messages
         getContext().become(createCrashedReceive());
 
@@ -361,16 +207,22 @@ public class Replica extends AbstractReplica {
         this.group = sysInit.group;
         this.coordinatorId = sysInit.coordinator_id;
         if (this.id == this.coordinatorId) {
-            // if this node is the coordinator, start sending heartbeat messages to the other nodes
-            startCoordinatorHeartbeat();
+            // if this node is the coordinator, start sending heartbeat messages to the
+            // other nodes
+            heartbeatManager.startCoordinatorHeartbeat();
         } else {
             // initialize the heartbeat timer if this node is not the coordinator
-            resetHeartbeatTimeout();
+            heartbeatManager.resetTimeout();
         }
 
     }
 
-    // this methods handle message reception in different situations: NORMAL, ELECTION, CRASHED
+    // =================================================================================
+    // Message handling
+    // =================================================================================
+
+    // this methods handle message reception in different situations: NORMAL,
+    // ELECTION, CRASHED
     // .match() filters messages the replica can receive/handle in each state
 
     // NORMAL state: the replica is wroking normally, no crash detected
@@ -378,13 +230,13 @@ public class Replica extends AbstractReplica {
     public final Receive createReceive() {
         return createBaseReceiveBuilder()
                 .match(AbstractReplica.InitSystem.class, this::initSystem)
-                .match(Messages.UpdateRequest.class, this::handleUpdateRequest)
-                .match(Messages.Update.class, this::handleUpdate)
-                .match(Messages.Ack.class, this::handleAck)
-                .match(Messages.WriteOk.class, this::handleWriteOk)
-                .match(Messages.Heartbeat.class, this::handleHeartbeat) // handle heartbeat
+                .match(Messages.UpdateRequest.class, updateManager::handleUpdateRequest)
+                .match(Messages.Update.class, updateManager::handleUpdate)
+                .match(Messages.Ack.class, updateManager::handleAck)
+                .match(Messages.WriteOk.class, updateManager::handleWriteOk)
+                .match(Messages.Heartbeat.class, heartbeatManager::handleHeartbeat) // handle heartbeat
 
-                .match(Messages.Election.class, this::handleElection)
+                .match(Messages.Election.class, electionManager::handleElection)
 
                 // also handle the timeouts
                 .match(Messages.HeartbeatTimeout.class, this::handleHeartbeatTimeout)
@@ -394,24 +246,23 @@ public class Replica extends AbstractReplica {
                 .build();
     }
 
-    // ELECTION state: coordinator crash detected, switched to election state, where we want to handle only the election messages, ignoring updates
+    // ELECTION state: coordinator crash detected, switched to election state, where
+    // we want to handle only the election messages, ignoring updates
     public final Receive createElectionReceive() {
         return createBaseReceiveBuilder()
                 // handle election messages, synch messages and acks
-                .match(Messages.Election.class, this::handleElection)
-                .match(Messages.ElectionAck.class, this::handleElectionAck)
-                .match(Messages.Synchronization.class, this::handleSynchronization)
+                .match(Messages.Election.class, electionManager::handleElection)
+                .match(Messages.ElectionAck.class, electionManager::handleElectionAck)
+                .match(Messages.Synchronization.class, syncManager::handleSynchronization)
 
-                .match(Messages.UpdateSyncRequest.class, this::handleUpdateSyncRequest)
-                .match(Messages.UpdateSyncResponse.class, this::handleUpdateSyncResponse)
-
-
+                .match(Messages.UpdateSyncRequest.class, syncManager::handleUpdateSyncRequest)
+                .match(Messages.UpdateSyncResponse.class, syncManager::handleUpdateSyncResponse)
 
                 // also handle the timeouts
-                .match(Messages.ElectionTimeout.class, this::handleElectionTimeout)
-                .match(Messages.ElectionAckTimeout.class, this::handleElectionAckTimeout)
+                .match(Messages.ElectionTimeout.class, electionManager::handleElectionTimeout)
+                .match(Messages.ElectionAckTimeout.class, electionManager::handleElectionAckTimeout)
 
-                .match(Messages.UpdateSyncTimeout.class, this::handleUpdateSyncTimeout)
+                .match(Messages.UpdateSyncTimeout.class, syncManager::handleUpdateSyncTimeout)
                 .build();
     }
 
@@ -421,531 +272,35 @@ public class Replica extends AbstractReplica {
                 .build();
     }
 
-    // TIMEOUTS MANAGEMENT
+    // =================================================================================
+    // Timeouts management
+    // == (all of them just trigger the election protocol)
+    // =================================================================================
+
     // handle Update message timeout
-    public final void handleUpdateTimeout(Messages.UpdateTimeout _msg) throws Exception {
-        // enter election state
-        enterElectionState();
-
-        // log info
-        log("Update timeout detected by node " + this.id + ". Starting election protocol.");
-
-        // start election protocol
-        startElectionProtocol();
+    public final void handleUpdateTimeout(Messages.UpdateTimeout _msg) {
+        electionManager.startElection("Update timeout detected by node " + this.id + ". Starting election protocol.");
     }
 
     // handle WriteOk message timeout
-    public final void handleWriteOkTimeout(Messages.WriteOkTimeout _msg) throws Exception {
-        // enter election state
-        enterElectionState();
-        
-        // log info
-        log("WriteOk timeout detected by node " + this.id + ". Starting election protocol.");
-
-        // start election
-        startElectionProtocol();
-    }
-
-    // HEARTBEAT MANAGEMENT
-    // start heartbeat (x coordinator)
-    public final void startCoordinatorHeartbeat() {
-        // debug("Replica " + this.id + " starting coordinator heartbeat");
-        getContext().getSystem().scheduler().scheduleAtFixedRate(
-                Duration.create(getCoordinatorBeatInterval(), TimeUnit.MILLISECONDS),
-                Duration.create(getCoordinatorBeatInterval(), TimeUnit.MILLISECONDS),
-                getSelf(),
-                new Messages.Heartbeat(),
-                getContext().dispatcher(),
-                getSelf());
-    }
-
-    // reset heartbeat timer on heartbeat message reception (x node)
-    private void resetHeartbeatTimeout() {
-        // cancel old timer (if it exists)
-        if(heartbeatTimer != null){
-            heartbeatTimer.cancel();
-        }
-
-        // staggering time applied to the heartbeat timeout to avoid all nodes to fire the timeout at the same time
-        int staggeringTime = (int) (this.id * (500.0 / group.size())); 
-
-        // start new one
-        heartbeatTimer = getContext().system().scheduler().scheduleOnce(
-            Duration.create(getCoordinatorBeatInterval() * 2 + staggeringTime, TimeUnit.MILLISECONDS), // timer duration here depends on coordinator heartbeat duration
-            getSelf(),                                                                // destination (self)
-            new Messages.HeartbeatTimeout(),                                          // message that will be received, here HeartbeatTimeout
-            getContext().dispatcher(),                                                // dispatcher
-            getSelf()                                                                 // sender (self)
-        );
-    }
-
-    // handle heartbeat message (x nodes and coordinator)
-    public final void handleHeartbeat(Messages.Heartbeat _msg) throws Exception {
-        // coordinator is in charge of telling the nodes that it is alive
-        if (this.id == coordinatorId){ 
-            for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
-                if (entry.getKey() != this.id) { // get nodes that are not the cooridnator
-                    entry.getValue().tell(new Messages.Heartbeat(), getSelf()); // coordinator tells them it is alive
-                }
-            }
-        }
-        else{ 
-            // when other nodes receive a heartbeat from the coordinator they can reset the timer
-            resetHeartbeatTimeout();
-        }
+    public final void handleWriteOkTimeout(Messages.WriteOkTimeout _msg) {
+        electionManager.startElection("WriteOk timeout detected by node " + this.id + ". Starting election protocol.");
     }
 
     // handle heartbeat message timeout -> coordinator crashed!
-    public final void handleHeartbeatTimeout(Messages.HeartbeatTimeout _msg) throws Exception {
-        // enter election state
-        enterElectionState();
-
-        // log info
-        log("Heartbeat timeout detected by node " + this.id + ". Starting election protocol.");
-
-        // start election
-        startElectionProtocol();
+    public final void handleHeartbeatTimeout(Messages.HeartbeatTimeout _msg) {
+        electionManager.startElection("Heartbeat timeout detected by node " + this.id + ". Starting election protocol.");
     }
 
-    // utility function to cancel all timers
-    public final void cancelAllTimers(){
-        //if (updateTimer != null) updateTimer.cancel();
-        //if (writeOkTimer != null) writeOkTimer.cancel();
-        if (heartbeatTimer != null) heartbeatTimer.cancel();
-        if (electionTimer != null) electionTimer.cancel();
-        if (electionAckTimer != null) electionAckTimer.cancel();
+    // =================================================================================
+    // Public delegators preserved for external/test API
+    // =================================================================================
 
-        if (writeOkTimers != null) {
-            for (Cancellable timer : writeOkTimers.values()) {
-                timer.cancel();
-            }
-            writeOkTimers.clear();
-        }
-
-        if (updateTimers != null) {
-            for (Cancellable timer : updateTimers.values()) {
-                timer.cancel();
-            }
-            updateTimers.clear();
-        }
+    public int getNextNodeId() {
+        return electionManager.getNextNodeId();
     }
 
-    // ELECTION MANAGEMENT  
-    // function to get the next node in the ring (returns the ID)
-    public int getNextNodeId(){
-        // group hash map cannot be sorted directly -> convert group in an array list of ids
-        List<Integer> sortedGroupIds = new ArrayList<>(this.group.keySet());
-
-        // sort it
-        Collections.sort(sortedGroupIds);
-
-        // get index in the list of the current node
-        int i = sortedGroupIds.indexOf(this.id);
-
-        int nextId;
-        do{
-            // get next index (consider circularity)
-            i = (i + 1) % sortedGroupIds.size();
-
-            // get corresponding next id in the list
-            nextId = sortedGroupIds.get(i);
-
-            // if the next id is the same as this node id, it means that all other nodes are crashed, so we can break the loop
-            if (nextId == this.id) {
-                break;
-            }
-
-        } while(nextId == coordinatorId || crashedReplicas.contains(nextId)); // ignore coordinatorId and crashed replicas
-        
-        // return 
-        return nextId;
-    }
-
-    // get ID associated to the most recent update
-    public int getBestId(Messages.Election _msg){
-       int bestId = Integer.MIN_VALUE;
-       Messages.NodeClock bestClock = new Messages.NodeClock(Integer.MIN_VALUE, Integer.MIN_VALUE);
-
-       // cycle on map entries
-       for(Map.Entry<Integer,Messages.NodeClock> entry : _msg.candidates.entrySet()){
-            // check that the replica is not crashed
-            if(!crashedReplicas.contains(entry.getKey())){
-                // check if the entry clock is newer (compare epoch and seqNum)
-                if(entry.getValue().compareTo(bestClock) > 0){
-                    bestClock = entry.getValue();
-                    bestId = entry.getKey();
-                }
-                // if there is a tie, get highest ID
-                else if (entry.getValue().compareTo(bestClock) == 0 && entry.getKey() > bestId) {
-                    bestClock = entry.getValue();
-                    bestId = entry.getKey();
-                }
-            }
-       }
-       return bestId;
-    }
-
-
-    // change state: NORMAL -> ELECTION
-    public void enterElectionState(){    
-        if (this.inElection) {
-            return; 
-        }
-
-        // callback
-        callbackOnElectionStarted(this.coordinatorId);
-
-        // add the crashed coordinator to the list of crashed replicas
-        if (coordinatorId != -1) {
-            crashedReplicas.add(coordinatorId);
-        }
-
-        // this is done by changing the node behaviour using the "message filter" defined in createElectionReceive
-        getContext().become(createElectionReceive());
-        this.inElection = true;
-
-        // cancel all timers, not needed anymore
-        cancelAllTimers();
-
-        electionTimer = getContext().system().scheduler().scheduleOnce(
-        Duration.create(timerDuration * group.size(), TimeUnit.MILLISECONDS),
-        getSelf(), new Messages.ElectionTimeout(),
-        getContext().dispatcher(), getSelf()
-    );
-    }
-
-    public void startElectionProtocol(){
-        // reset election message and coordinator id
-        election = new Messages.Election();
-        coordinatorId = -1;
-        election.starterId = this.id;
-
-        // append node id and last seen message
-        if(!toCommitQueue.isEmpty()){
-            election.candidates.put(this.id, this.toCommitQueue.lastKey()); // toCommitQueue is a tree map, so is ordered by NodeClock, get latest
-        }
-        else if (!commitHistory.isEmpty()){
-            election.candidates.put(this.id, this.commitHistory.lastKey());
-        } else {
-            election.candidates.put(this.id, new Messages.NodeClock(0, 0)); // if no updates have been made yet, use default clock
-        }
-
-        // forward message to next node in the ring
-        nextNodeId = getNextNodeId();
-        ActorRef nextNode = this.group.get(nextNodeId);
-        nextNode.tell(election, getSelf());
-
-        // start timer for ack of the receiver
-        electionAckTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.MILLISECONDS), // timer duration
-                getSelf(),                                         // destination (self)
-                new Messages.ElectionAckTimeout(),                 // message that will be received, here ElectionAckTimeout
-                getContext().dispatcher(),                         // dispatcher
-                getSelf()                                          // sender (self)
-        );
-
-        // start timer for the election to end after some time has passed 
-        // electionTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration * group.size(), TimeUnit.MILLISECONDS), // timer duration here is multiplied by the number of replicas to account for a full cycle duration
-        //         getSelf(),                                                        // destination (self)
-        //         new Messages.ElectionTimeout(),                                   // message that will be received, here ElectionTimeout
-        //         getContext().dispatcher(),                                        // dispatcher
-        //         getSelf()                                                         // sender (self)
-        // );
-
-        // log info
-        log("Election protocol started.");
-    }
-
-    public void handleElection(Messages.Election _msg) throws Exception {
-        log(
-            "Replica " + id +
-            " received Election starter=" + _msg.starterId +
-            " sender=" + getSender() +
-            " candidates=" + _msg.candidates.keySet()
-        );
-        // save election message
-        this.election = _msg;
-
-        // if node still in NORMAL state, enter ELECTION state and handle election message
-        // check if the node that started the election is not the same as this node, otherwise it means the message cycled back to it and it can check if it is the best candidate
-        // if (!inElection || _msg.starterId != this.id) {
-        if (!inElection) {
-            // go to election state
-            if (!inElection) {
-                enterElectionState();
-            }
-
-            // ack sender
-            getSender().tell(new Messages.ElectionAck(), getSelf());
-
-            // add own data to the election message -> append node id and last seen message (if all messages have been commited, take it from the commit history)
-            if(!toCommitQueue.isEmpty()){
-                _msg.candidates.put(this.id, this.toCommitQueue.lastKey());
-            }
-            else if (!commitHistory.isEmpty()){
-                _msg.candidates.put(this.id, this.commitHistory.lastKey());
-            } else {
-                _msg.candidates.put(this.id, new Messages.NodeClock(0, 0)); // if no updates have been made yet, use default clock
-            }
-             
-
-            // forward message to next node in the ring
-            nextNodeId= getNextNodeId();
-            ActorRef nextNode = this.group.get(nextNodeId);
-            nextNode.tell(_msg, getSelf());
-
-            debug(
-                "Replica " + id +
-                " forwarding to " + nextNodeId
-            );
-
-            // setup timer for the receiver ack
-            electionAckTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.MILLISECONDS), // timer duration
-                    getSelf(),                                         // destination (self)
-                    new Messages.ElectionAckTimeout(),                 // message that will be received, here ElectionAckTimeout
-                    getContext().dispatcher(),                         // dispatcher
-                    getSelf()                                          // sender (self)
-            );
-
-            // // start timer for the election to end after some time has passed 
-            // electionTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration * group.size(), TimeUnit.MILLISECONDS), // timer duration here is multiplied by the number of replicas to account for a full cycle duration
-            //         getSelf(),                                                        // destination (self)
-            //         new Messages.ElectionTimeout(),                                   // message that will be received, here ElectionTimeout
-            //         getContext().dispatcher(),                                        // dispatcher
-            //         getSelf()                                                         // sneder (self)
-            // );
-        }
-        else {
-            getSender().tell(new Messages.ElectionAck(), getSelf());
-            // if the node was already in election, it means the message cycled back to it, therefore it needs to check if it is the best candidate
-            if (this.id == getBestId(_msg)){
-                // if it is, elect it as coordinator 
-                electAsCoordinator(_msg);
-            }
-            else{
-                // forward message to next node in the ring
-                nextNodeId= getNextNodeId();
-                ActorRef nextNode = this.group.get(nextNodeId);
-                nextNode.tell(_msg, getSelf());
-            }
-        }
-    }
-
-    // this function elects the node as the new coordinator and it also handles incomplete updates (no WRITEOK or some received and others did not)
-    public void electAsCoordinator(Messages.Election _msg) throws Exception {
-        // clean variables
-        updateSyncResponses.clear();
-        completeHistory.clear();
-
-        debug("Replica " + id + " elected coordinator");
-
-        // cleanup of timers + setup new cooridnator
-        cancelAllTimers();
-        //this.inElection = false;
-
-        // merge the commited and to commit hystory of the coordinator
-        // Map<Messages.NodeClock, Messages.UpdateData> completeHistory = new TreeMap<>(this.commitHistory);
-        // for (Map.Entry<Messages.NodeClock, Messages.UpdateData> entry : this.toCommitQueue.entrySet()) {
-        //    completeHistory.put(entry.getKey(), entry.getValue());
-        // }
-        
-        // add rertrival of complete upate history from replicas
-        for(Map.Entry<Integer,ActorRef> node : group.entrySet()){
-            if(!crashedReplicas.contains(node.getKey()) && node.getKey() != this.id){
-                node.getValue().tell(new Messages.UpdateSyncRequest(), getSelf());
-            }
-        } 
-
-        // setup timer for the receiver ack
-        updateSyncTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.MILLISECONDS), // timer duration
-                getSelf(),                                         // destination (self)
-                new Messages.UpdateSyncTimeout(),                  // message that will be received, here UpdateSyncTimeout
-                getContext().dispatcher(),                         // dispatcher
-                getSelf()                                          // sender (self)
-        );
-    }
-
-    private void finishSynchronization() throws Exception{
-        // prepare synchronization message with the id of the new coordinator and the up to date message history
-        Messages.Synchronization synchMsg = new Messages.Synchronization();
-        synchMsg.newCoordId = this.id;
-
-        this.coordinatorId = this.id;
-        callbackOnCoordinatorElected(this.coordinatorId);
-
-        // add to complte history the coordinator history, now it is complete
-        completeHistory.putAll(commitHistory);
-        completeHistory.putAll(toCommitQueue);
-
-        // complete history contains commited and still uncommitted updates
-        synchMsg.coordHistory = completeHistory;
-
-        // the new coordinator can start new epoch an reset the sequence number 
-        this.epoch++;
-        this.seqNum = 0;
-
-        // got to NORMAL state
-        // cancelAllTimers();
-        getContext().become(createReceive());
-
-        // restart the heartbeat
-        //startCoordinatorHeartbeat();
-
-        // send synchronization message in broadcast to the other replicas
-        for(Map.Entry<Integer,ActorRef> node : group.entrySet()){
-            if(!crashedReplicas.contains(node.getKey()) && node.getKey() != this.id){
-                node.getValue().tell(synchMsg, getSelf());
-            }
-        } 
-
-        // allow coordinator to commit what's left
-        // put it here so in each coord-replica channel we have synch message before 
-        this.handleSynchronization(synchMsg);  
-    }
-
-    // this function brings all replicas up to date with the updates (it is called also by the coordinator itself to commit what was left in the toCommitQueue before the election)
-    public void handleSynchronization(Messages.Synchronization _msg) throws Exception {
-        // set new coordinator
-        // this.coordinatorId = _msg.newCoordId;
-        // callbackOnCoordinatorElected(this.coordinatorId);
-
-        if (this.coordinatorId != _msg.newCoordId) {
-            this.coordinatorId = _msg.newCoordId;
-            callbackOnCoordinatorElected(_msg.newCoordId);
-        }
-        
-        // get up to date with updates -> these still have clock in the old view
-        for (Map.Entry<Messages.NodeClock, Messages.UpdateData> entry : _msg.coordHistory.entrySet()) {
-            Messages.NodeClock clock = entry.getKey();
-            Messages.UpdateData data = entry.getValue();
-
-            // check history against most up to date history (from coordinator)
-            if(!this.commitHistory.containsKey(clock)){
-                // if the node is missing some updates apply them
-                this.storage[data.index] = data.value;
-                this.commitHistory.put(clock, data);
-                callbackOnUpdateApplied(data.index, data.value);
-            }
-        }
-        
-        // now that everything is commit we can clear the queues
-        this.ackedList.clear();
-        this.toCommitQueue.clear();
-        this.readyToCommit.clear();
-        this.ackCounters.clear();
-
-        //if(this.id != this.coordinatorId){
-            // from ELECTION state back to NORMAL state
-            this.inElection = false;
-            cancelAllTimers();
-            getContext().become(createReceive());
-
-            // reset heartbeat timer
-            if (this.id != this.coordinatorId) {
-                resetHeartbeatTimeout();
-            } else {
-                startCoordinatorHeartbeat();
-            }
-
-            // these will have a clock in the new view
-            resendPendingUpdateRequest();
-        //}
-
-    }
-
-    public void handleUpdateSyncRequest(Messages.UpdateSyncRequest _msg) {
-
-        Map<Messages.NodeClock, Messages.UpdateData> history = new TreeMap<>(commitHistory);
-        history.putAll(toCommitQueue);
-
-        // now history contains toCommitQueue and commitHistory of the replica and can send it back to the cooridnator
-        getSender().tell(new Messages.UpdateSyncResponse(this.id, history), getSelf());
-    }
-
-    public void handleUpdateSyncResponse(Messages.UpdateSyncResponse _msg) {
-        // add history of the replica to the complete history
-        completeHistory.putAll(_msg.updateHistory);
-
-        updateSyncResponses.add(_msg.id);
-
-        if(updateSyncResponses.size() == group.size() - 1 - crashedReplicas.size()){
-            updateSyncTimer.cancel();
-            try {
-                finishSynchronization();
-            } catch (Exception ex) {
-                log("Update sync failed (handleUpdateSyncResponse)");
-            }
-        }
-    }
-
-    public void handleUpdateSyncTimeout(Messages.UpdateSyncTimeout _msg) {
-
-        for(Integer id : group.keySet()) {
-            if(id != this.id && !crashedReplicas.contains(id) && !updateSyncResponses.contains(id)) {
-                crashedReplicas.add(id);
-            }
-        }
-        try {
-            finishSynchronization();
-        } catch (Exception ex) {
-            log("Update sync failed (handleUpdateSyncTimeout)");
-        }
-    }
-
-
-    public void resendPendingUpdateRequest(){
-        debug(
-        "Replica " + id +
-        " resend pending = " + pendingUpdateRequests.size());
-        for (Map.Entry<String, Messages.UpdateRequest> entry : new HashMap<>(pendingUpdateRequests).entrySet()) {
-            Messages.UpdateRequest pendingUpdateRequest = entry.getValue();
-            // Boolean fromReplica = true; 
-            // if(this.id == coordinatorId) fromReplica = false;
-            Messages.UpdateRequest retry =
-                new Messages.UpdateRequest(
-                        pendingUpdateRequest.index,
-                        pendingUpdateRequest.value,
-                        pendingUpdateRequest.client,
-                        pendingUpdateRequest.fromReplica,         
-                        entry.getKey());
-
-            try {
-                handleUpdateRequest(retry);
-            } catch (Exception e) {
-                log("Error in retry pending request: " + e.getMessage());
-            }
-        } 
-    }
-
-    public void handleElectionAck(Messages.ElectionAck _msg) throws Exception {
-        // sender of election message can cancel the timer now that it received the ACK
-        if (electionAckTimer != null) electionAckTimer.cancel();
-    }
-
-    public void handleElectionTimeout(Messages.ElectionTimeout _msg) throws Exception {
-       // soemthing went wrong during the election, retry
-       // enterElectionState(); // to reset timers
-       debug(
-            "Election timeout on replica " + id
-        );
-       startElectionProtocol();
-    }
-
-    public void handleElectionAckTimeout(Messages.ElectionAckTimeout _msg) throws Exception {
-        // ACK to an election message was not received, add node to crashedReplicas
-        crashedReplicas.add(nextNodeId);
-
-        // retry now
-        // forward message to next node in the ring (now skipping the crashed one)
-        nextNodeId= getNextNodeId();
-        ActorRef nextNode = this.group.get(nextNodeId); 
-        nextNode.tell(election, getSelf());
-
-        // setup timer for the receiver ack
-        electionAckTimer = getContext().system().scheduler().scheduleOnce(Duration.create(timerDuration, TimeUnit.MILLISECONDS), // timer duration
-                getSelf(),                                         // destination (self)
-                new Messages.ElectionAckTimeout(),                 // message that will be received, here ElectionAckTimeout
-                getContext().dispatcher(),                         // dispatcher
-                getSelf()                                          // sender (self)
-        );
+    public int getBestId(Messages.Election _msg) {
+        return electionManager.getBestId(_msg);
     }
 }

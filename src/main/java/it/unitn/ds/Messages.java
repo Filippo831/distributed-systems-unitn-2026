@@ -188,6 +188,10 @@ public class Messages {
             this.id = _id;
             this.updateHistory = _updateHistory;
         }
+
+        public int getId() {
+            return id;
+        }
     }
     
     // Create empty classes to handle timeouts
