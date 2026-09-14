@@ -18,25 +18,23 @@ public class HeartbeatManager {
     // timer for heartbeat timeout detection
     private Cancellable heartbeatTimer = null;
 
-    public HeartbeatManager(Replica replica) {
-        this.replica = replica;
+    public HeartbeatManager(Replica _replica) {
+        this.replica = _replica;
     }
 
     // start heartbeat (x coordinator)
     public void startCoordinatorHeartbeat() {
-        Replica r = replica;
-        r.actorContext().getSystem().scheduler().scheduleAtFixedRate(
-                Duration.create(r.getCoordinatorBeatInterval(), TimeUnit.MILLISECONDS),
-                Duration.create(r.getCoordinatorBeatInterval(), TimeUnit.MILLISECONDS),
-                r.getSelfRef(),
+        replica.actorContext().getSystem().scheduler().scheduleAtFixedRate(
+                Duration.create(replica.getCoordinatorBeatInterval(), TimeUnit.MILLISECONDS),
+                Duration.create(replica.getCoordinatorBeatInterval(), TimeUnit.MILLISECONDS),
+                replica.getSelfRef(),
                 new Messages.Heartbeat(),
-                r.actorContext().dispatcher(),
-                r.getSelfRef());
+                replica.actorContext().dispatcher(),
+                replica.getSelfRef());
     }
 
-    // reset heartbeat timer on heartbeat message reception (x node)
+    // reset heartbeat timer on heartbeat message reception
     public void resetTimeout() {
-        Replica r = replica;
         // cancel old timer (if it exists)
         if (heartbeatTimer != null) {
             heartbeatTimer.cancel();
@@ -44,19 +42,18 @@ public class HeartbeatManager {
 
         // staggering time applied to the heartbeat timeout to avoid all nodes to fire
         // the timeout at the same time
-        int staggeringTime = (int) (r.getId() * (500.0 / r.group.size()));
+        int staggeringTime = (int) (replica.getId() * (500.0 / replica.group.size()));
 
         // start new one
-        heartbeatTimer = r.createTimer(new Messages.HeartbeatTimeout(),
-                r.getCoordinatorBeatInterval() * 2 + staggeringTime);
+        heartbeatTimer = replica.createTimer(new Messages.HeartbeatTimeout(),
+                replica.getCoordinatorBeatInterval() * 2 + staggeringTime);
     }
 
-    // handle heartbeat message (x nodes and coordinator)
+    // handle heartbeat message
     public void handleHeartbeat(Messages.Heartbeat _msg) {
-        Replica r = replica;
         // coordinator is in charge of telling the nodes that it is alive
-        if (r.getId() == r.coordinatorId) {
-            r.broadcast(new Messages.Heartbeat());
+        if (replica.getId() == replica.coordinatorId) {
+            replica.broadcast(new Messages.Heartbeat());
         } else {
             // when other nodes receive a heartbeat from the coordinator they can reset the
             // timer

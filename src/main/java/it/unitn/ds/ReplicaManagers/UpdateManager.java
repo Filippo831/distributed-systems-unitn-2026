@@ -47,28 +47,27 @@ public class UpdateManager {
     // timer per request id, armed after forwarding the UpdateRequest
     private Map<String, Cancellable> updateTimers = new HashMap<>();
 
-    public UpdateManager(Replica replica) {
-        this.replica = replica;
+    public UpdateManager(Replica _replica) {
+        this.replica = _replica;
     }
 
     // handling of the UpdateRequest message
     // - coordinator actions -> handle request + forward Update message
     // - replica actions -> forward message to coordinator + handle Update timer
     public void handleUpdateRequest(Messages.UpdateRequest _msg) throws Exception {
-        Replica r = replica;
-        if (r.getId() == r.coordinatorId) {
+        if (replica.getId() == replica.coordinatorId) {
             // THIS IS THE COORDINATOR
             // - forward to other replicas UPDATE MESSAGE
             // - save client in myClients and updateClients with current clock
-            r.seqNum++;
+            replica.seqNum++;
 
             // define node clock -> each update the coordinator sends is identified by a
             // pair <e, i>
-            Messages.NodeClock updateClock = new Messages.NodeClock(r.epoch, r.seqNum);
+            Messages.NodeClock updateClock = new Messages.NodeClock(replica.epoch, replica.seqNum);
 
             Messages.UpdateData updateData = new Messages.UpdateData(_msg.index, _msg.value);
 
-            updateClients.put(new Messages.NodeClock(r.epoch, r.seqNum), _msg.client);
+            updateClients.put(new Messages.NodeClock(replica.epoch, replica.seqNum), _msg.client);
 
             // CHECK: removed to know who the coordinator has to respond to
             if (!_msg.fromReplica) {
@@ -78,11 +77,11 @@ public class UpdateManager {
             }
 
             this.ackCounters.put(updateClock, 1);
-            r.toCommitQueue.put(updateClock, updateData);
+            replica.toCommitQueue.put(updateClock, updateData);
 
             String requestId;
             if (_msg.id == null) {
-                requestId = r.getId() + "-" + UUID.randomUUID();
+                requestId = replica.getId() + "-" + UUID.randomUUID();
             } else {
                 requestId = _msg.id;
             }
@@ -91,7 +90,7 @@ public class UpdateManager {
 
             // if is the coordinator who received the updateRequest, send an UPDATE to the
             // replicas
-            r.broadcast(new Messages.Update(_msg.index, _msg.value, new Messages.NodeClock(r.epoch, r.seqNum),
+            replica.broadcast(new Messages.Update(_msg.index, _msg.value, new Messages.NodeClock(replica.epoch, replica.seqNum),
                     _msg.client, requestId));
         } else {
             // THIS IS NOT THE COORDINATOR
@@ -104,7 +103,7 @@ public class UpdateManager {
             this.myClients.computeIfAbsent(_msg.client, k -> new HashSet<>());
 
             // create a unique ID for the request
-            String requestId = r.getId() + "-" + UUID.randomUUID();
+            String requestId = replica.getId() + "-" + UUID.randomUUID();
 
             // prepare update request
             Messages.UpdateRequest forwardMsg = new Messages.UpdateRequest(_msg.index, _msg.value, _msg.client, true,
@@ -114,11 +113,11 @@ public class UpdateManager {
             pendingUpdateRequests.put(requestId, forwardMsg);
 
             // send to coordinator
-            r.group.get(r.coordinatorId).tell(forwardMsg, r.getSelfRef());
+            replica.group.get(replica.coordinatorId).tell(forwardMsg, replica.getSelfRef());
 
             // when the node sends UpdateRequest to the coordinator it starts waiting for
             // the Update message, so the updateTimer is started
-            Cancellable timer = r.createTimer(new Messages.UpdateTimeout(), r.timerDuration);
+            Cancellable timer = replica.createTimer(new Messages.UpdateTimeout(), replica.timerDuration);
 
             // create update timer, associated with the request ID
             updateTimers.put(requestId, timer);
@@ -127,17 +126,16 @@ public class UpdateManager {
 
     // handle Update message (nodes)
     public void handleUpdate(Messages.Update _msg) throws Exception {
-        Replica r = replica;
         // Cancel the timer associeted with that request
-        Cancellable t = updateTimers.remove(_msg.id);
-        if (t != null)
-            t.cancel();
+        Cancellable removedTimer = updateTimers.remove(_msg.id);
+        if (removedTimer != null)
+            removedTimer.cancel();
 
         // remove pending UpdateRequest
         pendingUpdateRequests.remove(_msg.id);
 
         // get node clock assigned by coordinator _msg.clock
-        r.toCommitQueue.put(_msg.clock, new Messages.UpdateData(_msg.index, _msg.value));
+        replica.toCommitQueue.put(_msg.clock, new Messages.UpdateData(_msg.index, _msg.value));
 
         updateClients.put(_msg.clock, _msg.client);
 
@@ -149,18 +147,17 @@ public class UpdateManager {
         }
 
         // send ACK back to the coordinator
-        r.group.get(r.coordinatorId).tell(new Messages.Ack(_msg.clock), r.getSelfRef());
+        replica.group.get(replica.coordinatorId).tell(new Messages.Ack(_msg.clock), replica.getSelfRef());
 
         // when the node sends ACK to the coordinator it starts waiting for the WriteOk
         // message, so the writeOkTimer is started
-        Cancellable timer = r.createTimer(new Messages.WriteOkTimeout(), r.timerDuration);
+        Cancellable newTimer = replica.createTimer(new Messages.WriteOkTimeout(), replica.timerDuration);
 
-        writeOkTimers.put(_msg.clock, timer);
+        writeOkTimers.put(_msg.clock, newTimer);
     }
 
     // coordinator: count Acks and commit in order once the quorum is reached
     public void handleAck(Messages.Ack _msg) throws Exception {
-        Replica r = replica;
         // incerment number of received ack for the _msg.NodeClock
         int currentCount = this.ackCounters.getOrDefault(_msg.clock, 0);
         currentCount++;
@@ -168,7 +165,7 @@ public class UpdateManager {
 
         // if number of ack received >= (N/2 + 1) [quorum] add the clock to the
         // ackdeList
-        if (this.ackCounters.get(_msg.clock) >= (Math.floor(r.group.size() / 2) + 1)) {
+        if (this.ackCounters.get(_msg.clock) >= (Math.floor(replica.group.size() / 2) + 1)) {
             // keep track of the acked clocks to later commit them in order
             if (!this.ackedList.contains(_msg.clock)) {
                 this.ackedList.add(_msg.clock);
@@ -176,18 +173,18 @@ public class UpdateManager {
             }
             // iterate until the smallest clock in the ackedList is not the first in the
             // toCommitQueue.
-            while (!this.ackedList.isEmpty() && !r.toCommitQueue.isEmpty()
-                    && this.ackedList.get(0).equals(r.toCommitQueue.firstKey())) {
+            while (!this.ackedList.isEmpty() && !replica.toCommitQueue.isEmpty()
+                    && this.ackedList.get(0).equals(replica.toCommitQueue.firstKey())) {
 
                 Messages.NodeClock clockToCommit = this.ackedList.remove(0);
-                Messages.UpdateData dataToCommit = r.toCommitQueue.remove(clockToCommit);
+                Messages.UpdateData dataToCommit = replica.toCommitQueue.remove(clockToCommit);
 
                 if (dataToCommit != null) {
                     // persist the values on the storage
                     commitToStorage(clockToCommit, dataToCommit);
 
                     // send the writeOk to all the others
-                    r.broadcast(new Messages.WriteOk(clockToCommit));
+                    replica.broadcast(new Messages.WriteOk(clockToCommit));
 
                     // send the writeOk to the client if it is this node's client
                     notifyClient(clockToCommit);
@@ -200,7 +197,6 @@ public class UpdateManager {
 
     // replica: commit in order once the WriteOk for the oldest clock is received
     public void handleWriteOk(Messages.WriteOk _msg) throws Exception {
-        Replica r = replica;
         // received WriteOk message, cancel the WriteOk timer!
         Cancellable timer = writeOkTimers.remove(_msg.clock); // remove entry from the map
         if (timer != null)
@@ -210,13 +206,13 @@ public class UpdateManager {
         readyToCommit.add(_msg.clock);
 
         // commit oldest message (readyToCommit and toCommitQueue are ordered!)
-        while (!readyToCommit.isEmpty() && !r.toCommitQueue.isEmpty()
-                && readyToCommit.first().equals(r.toCommitQueue.firstKey())) {
+        while (!readyToCommit.isEmpty() && !replica.toCommitQueue.isEmpty()
+                && readyToCommit.first().equals(replica.toCommitQueue.firstKey())) {
             // clock of the message to commit
             Messages.NodeClock clockToCommit = readyToCommit.first();
 
             // commit and remove from toCommitQueue
-            Messages.UpdateData toCommitData = r.toCommitQueue.remove(clockToCommit);
+            Messages.UpdateData toCommitData = replica.toCommitQueue.remove(clockToCommit);
 
             // persist the values on the storage
             commitToStorage(clockToCommit, toCommitData);

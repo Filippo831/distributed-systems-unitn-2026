@@ -8,7 +8,6 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
 
-import akka.actor.ActorContext;
 import akka.actor.ActorRef;
 import akka.actor.Cancellable;
 import akka.actor.Props;
@@ -279,17 +278,17 @@ public class Replica extends AbstractReplica {
 
     // handle Update message timeout
     public final void handleUpdateTimeout(Messages.UpdateTimeout _msg) {
-        electionManager.startElection("Update timeout detected by node " + this.id + ". Starting election protocol.");
+        electionManager.startElection();
     }
 
     // handle WriteOk message timeout
     public final void handleWriteOkTimeout(Messages.WriteOkTimeout _msg) {
-        electionManager.startElection("WriteOk timeout detected by node " + this.id + ". Starting election protocol.");
+        electionManager.startElection();
     }
 
     // handle heartbeat message timeout -> coordinator crashed!
     public final void handleHeartbeatTimeout(Messages.HeartbeatTimeout _msg) {
-        electionManager.startElection("Heartbeat timeout detected by node " + this.id + ". Starting election protocol.");
+        electionManager.startElection();
     }
 
     // =================================================================================

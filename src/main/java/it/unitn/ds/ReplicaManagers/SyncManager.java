@@ -1,6 +1,5 @@
 package it.unitn.ds.ReplicaManagers;
 
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -27,63 +26,60 @@ public class SyncManager {
     // ids of the replicas that replied to the UpdateSyncRequest
     private Set<Integer> updateSyncResponses = new HashSet<>();
 
-    public SyncManager(Replica replica) {
-        this.replica = replica;
+    public SyncManager(Replica _replica) {
+        this.replica = _replica;
     }
 
     // this node was elected as the new coordinator: it requests the update
     // histories from all the other replicas to build the complete history
-    public void startSynchronization(Messages.Election _msg) {
-        Replica r = replica;
-
+    public void startSynchronization() {
         // clean variables
         updateSyncResponses.clear();
         completeHistory.clear();
 
-        r.debugInfo("Replica " + r.getId() + " elected coordinator");
+        replica.debugInfo("Replica " + replica.getId() + " elected coordinator");
 
         // cleanup of timers + setup new cooridnator
-        r.cancelAllTimers();
+        replica.cancelAllTimers();
 
         // add rertrival of complete upate history from replicas
-        for (Map.Entry<Integer, ActorRef> node : r.group.entrySet()) {
-            if (!r.crashedReplicas.contains(node.getKey()) && node.getKey() != r.getId()) {
-                node.getValue().tell(new Messages.UpdateSyncRequest(), r.getSelfRef());
+        for (Map.Entry<Integer, ActorRef> node : replica.group.entrySet()) {
+            if (!replica.crashedReplicas.contains(node.getKey()) && node.getKey() != replica.getId()) {
+                node.getValue().tell(new Messages.UpdateSyncRequest(), replica.getSelfRef());
             }
         }
 
         // setup timer for the receiver ack
-        updateSyncTimer = r.createTimer(new Messages.UpdateSyncTimeout(), r.timerDuration);
+        updateSyncTimer = replica.createTimer(new Messages.UpdateSyncTimeout(), replica.timerDuration);
     }
 
     private void finishSynchronization() throws Exception {
-        Replica r = replica;
         // prepare synchronization message with the id of the new coordinator and the up
         // to date message history
         Messages.Synchronization synchMsg = new Messages.Synchronization();
-        synchMsg.newCoordId = r.getId();
+        synchMsg.newCoordId = replica.getId();
 
-        r.coordinatorId = r.getId();
-        r.onCoordinatorElected(r.coordinatorId);
+        replica.coordinatorId = replica.getId();
+        replica.onCoordinatorElected(replica.coordinatorId);
 
         // add to complte history the coordinator history, now it is complete
-        completeHistory.putAll(r.commitHistory);
-        completeHistory.putAll(r.toCommitQueue);
+        completeHistory.putAll(replica.commitHistory);
+        completeHistory.putAll(replica.toCommitQueue);
 
         // complete history contains commited and still uncommitted updates
         synchMsg.coordHistory = completeHistory;
 
         // the new coordinator can start new epoch an reset the sequence number
-        r.epoch++;
-        r.seqNum = 0;
+        replica.epoch++;
+        replica.seqNum = 0;
 
         // got to NORMAL state
-        r.actorContext().become(r.createReceive());
+        replica.actorContext().become(replica.createReceive());
 
         // send synchronization message in broadcast to the other replicas
-        for (Map.Entry<Integer, ActorRef> node : r.group.entrySet()) {
-            if (!r.crashedReplicas.contains(node.getKey()) && node.getKey() != r.getId()) {
-                node.getValue().tell(synchMsg, r.getSelfRef());
+        for (Map.Entry<Integer, ActorRef> node : replica.group.entrySet()) {
+            if (!replica.crashedReplicas.contains(node.getKey()) && node.getKey() != replica.getId()) {
+                node.getValue().tell(synchMsg, replica.getSelfRef());
             }
         }
 
@@ -96,12 +92,10 @@ public class SyncManager {
     // also by the coordinator itself to commit what was left in the toCommitQueue
     // before the election)
     public void handleSynchronization(Messages.Synchronization _msg) throws Exception {
-        Replica r = replica;
-
         // set new coordinator
-        if (r.coordinatorId != _msg.newCoordId) {
-            r.coordinatorId = _msg.newCoordId;
-            r.onCoordinatorElected(_msg.newCoordId);
+        if (replica.coordinatorId != _msg.newCoordId) {
+            replica.coordinatorId = _msg.newCoordId;
+            replica.onCoordinatorElected(_msg.newCoordId);
         }
 
         // get up to date with updates -> these still have clock in the old view
@@ -110,73 +104,68 @@ public class SyncManager {
             Messages.UpdateData data = entry.getValue();
 
             // check history against most up to date history (from coordinator)
-            if (!r.commitHistory.containsKey(clock)) {
+            if (!replica.commitHistory.containsKey(clock)) {
                 // if the node is missing some updates apply them
-                r.storage[data.index] = data.value;
-                r.commitHistory.put(clock, data);
-                r.onUpdateApplied(data.index, data.value);
+                replica.storage[data.index] = data.value;
+                replica.commitHistory.put(clock, data);
+                replica.onUpdateApplied(data.index, data.value);
             }
         }
 
         // now that everything is commit we can clear the queues
-        r.updateManager().clearCommitState();
+        replica.updateManager().clearCommitState();
 
         // from ELECTION state back to NORMAL state
-        r.electionManager().exitElection();
-        r.cancelAllTimers();
-        r.actorContext().become(r.createReceive());
+        replica.electionManager().exitElection();
+        replica.cancelAllTimers();
+        replica.actorContext().become(replica.createReceive());
 
         // reset heartbeat timer
-        if (r.getId() != r.coordinatorId) {
-            r.heartbeatManager().resetTimeout();
+        if (replica.getId() != replica.coordinatorId) {
+            replica.heartbeatManager().resetTimeout();
         } else {
-            r.heartbeatManager().startCoordinatorHeartbeat();
+            replica.heartbeatManager().startCoordinatorHeartbeat();
         }
 
         // these will have a clock in the new view
-        r.updateManager().resendPendingUpdateRequests();
+        replica.updateManager().resendPendingUpdateRequests();
     }
 
     public void handleUpdateSyncRequest(Messages.UpdateSyncRequest _msg) {
-        Replica r = replica;
-
-        Map<Messages.NodeClock, Messages.UpdateData> history = new TreeMap<>(r.commitHistory);
-        history.putAll(r.toCommitQueue);
+        Map<Messages.NodeClock, Messages.UpdateData> history = new TreeMap<>(replica.commitHistory);
+        history.putAll(replica.toCommitQueue);
 
         // now history contains toCommitQueue and commitHistory of the replica and can
         // send it back to the cooridnator
-        r.getSenderRef().tell(new Messages.UpdateSyncResponse(r.getId(), history), r.getSelfRef());
+        replica.getSenderRef().tell(new Messages.UpdateSyncResponse(replica.getId(), history), replica.getSelfRef());
     }
 
     public void handleUpdateSyncResponse(Messages.UpdateSyncResponse _msg) {
-        Replica r = replica;
         // add history of the replica to the complete history
         completeHistory.putAll(_msg.updateHistory);
 
         updateSyncResponses.add(_msg.getId());
 
-        if (updateSyncResponses.size() == r.group.size() - 1 - r.crashedReplicas.size()) {
+        if (updateSyncResponses.size() == replica.group.size() - 1 - replica.crashedReplicas.size()) {
             updateSyncTimer.cancel();
             try {
                 finishSynchronization();
             } catch (Exception ex) {
-                r.logInfo("Update sync failed (handleUpdateSyncResponse)");
+                replica.logInfo("Update sync failed (handleUpdateSyncResponse)");
             }
         }
     }
 
     public void handleUpdateSyncTimeout(Messages.UpdateSyncTimeout _msg) {
-        Replica r = replica;
-
-        for (Integer id : r.group.keySet()) {
-            if (id != r.getId() && !r.crashedReplicas.contains(id) && !updateSyncResponses.contains(id)) {
-                r.crashedReplicas.add(id);
+        for (Integer id : replica.group.keySet()) {
+            if (id != replica.getId() && !replica.crashedReplicas.contains(id) && !updateSyncResponses.contains(id)) {
+                replica.crashedReplicas.add(id);
             }
         }
         try {
             finishSynchronization();
         } catch (Exception ex) {
-            r.logInfo("Update sync failed (handleUpdateSyncTimeout)");
+            replica.logInfo("Update sync failed (handleUpdateSyncTimeout)");
         }
     }
 

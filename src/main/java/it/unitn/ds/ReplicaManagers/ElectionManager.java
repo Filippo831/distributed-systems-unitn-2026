@@ -33,22 +33,21 @@ public class ElectionManager {
 
     private int nextNodeId;
 
-    public ElectionManager(Replica replica) {
-        this.replica = replica;
+    public ElectionManager(Replica _replica) {
+        this.replica = _replica;
     }
 
     // function to get the next node in the ring (returns the ID)
     public int getNextNodeId() {
-        Replica r = replica;
         // group hash map cannot be sorted directly -> convert group in an array list of
         // ids
-        List<Integer> sortedGroupIds = new ArrayList<>(r.group.keySet());
+        List<Integer> sortedGroupIds = new ArrayList<>(replica.group.keySet());
 
         // sort it
         Collections.sort(sortedGroupIds);
 
         // get index in the list of the current node
-        int i = sortedGroupIds.indexOf(r.getId());
+        int i = sortedGroupIds.indexOf(replica.getId());
 
         int nextId;
         do {
@@ -60,11 +59,11 @@ public class ElectionManager {
 
             // if the next id is the same as this node id, it means that all other nodes are
             // crashed, so we can break the loop
-            if (nextId == r.getId()) {
+            if (nextId == replica.getId()) {
                 break;
             }
 
-        } while (nextId == r.coordinatorId || r.crashedReplicas.contains(nextId)); // ignore coordinatorId and crashed
+        } while (nextId == replica.coordinatorId || replica.crashedReplicas.contains(nextId)); // ignore coordinatorId and crashed
                                                                                     // replicas
 
         // return
@@ -73,14 +72,13 @@ public class ElectionManager {
 
     // get ID associated to the most recent update
     public int getBestId(Messages.Election _msg) {
-        Replica r = replica;
         int bestId = Integer.MIN_VALUE;
         Messages.NodeClock bestClock = new Messages.NodeClock(Integer.MIN_VALUE, Integer.MIN_VALUE);
 
         // cycle on map entries
         for (Map.Entry<Integer, Messages.NodeClock> entry : _msg.candidates.entrySet()) {
             // check that the replica is not crashed
-            if (!r.crashedReplicas.contains(entry.getKey())) {
+            if (!replica.crashedReplicas.contains(entry.getKey())) {
                 // check if the entry clock is newer (compare epoch and seqNum)
                 if (entry.getValue().compareTo(bestClock) > 0) {
                     bestClock = entry.getValue();
@@ -98,70 +96,64 @@ public class ElectionManager {
 
     // change state: NORMAL -> ELECTION
     public void enterElectionState() {
-        Replica r = replica;
         if (this.inElection) {
             return;
         }
 
         // callback
-        r.onElectionStarted(r.coordinatorId);
+        replica.onElectionStarted(replica.coordinatorId);
 
         // add the crashed coordinator to the list of crashed replicas
-        if (r.coordinatorId != -1) {
-            r.crashedReplicas.add(r.coordinatorId);
+        if (replica.coordinatorId != -1) {
+            replica.crashedReplicas.add(replica.coordinatorId);
         }
 
         // this is done by changing the node behaviour using the "message filter"
         // defined in createElectionReceive
-        r.actorContext().become(r.createElectionReceive());
+        replica.actorContext().become(replica.createElectionReceive());
         this.inElection = true;
 
         // cancel all timers, not needed anymore
-        r.cancelAllTimers();
+        replica.cancelAllTimers();
 
-        electionTimer = r.createTimer(new Messages.ElectionTimeout(), r.timerDuration * r.group.size());
+        electionTimer = replica.createTimer(new Messages.ElectionTimeout(), replica.timerDuration * replica.group.size());
     }
 
     // entry point for the timeout handlers: switch to election state and start the
     // protocol
-    public void startElection(String reason) {
+    public void startElection() {
         enterElectionState();
-
-        // log info
-        replica.logInfo(reason);
 
         // start election protocol
         startElectionProtocol();
     }
 
     public void startElectionProtocol() {
-        Replica r = replica;
         // reset election message and coordinator id
         election = new Messages.Election();
-        r.coordinatorId = -1;
-        election.starterId = r.getId();
+        replica.coordinatorId = -1;
+        election.starterId = replica.getId();
 
         // append node id and last seen message
         addOwnCandidate(election);
 
         // forward message to next node in the ring
         nextNodeId = getNextNodeId();
-        ActorRef nextNode = r.group.get(nextNodeId);
-        nextNode.tell(election, r.getSelfRef());
+        ActorRef nextNode = replica.group.get(nextNodeId);
+        nextNode.tell(election, replica.getSelfRef());
 
         // start timer for ack of the receiver
-        electionAckTimer = r.createTimer(new Messages.ElectionAckTimeout(), r.timerDuration);
+        electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.timerDuration);
 
         // log info
-        r.logInfo("Election protocol started.");
+        replica.logInfo("Election protocol started.");
     }
 
     public void handleElection(Messages.Election _msg) throws Exception {
-        Replica r = replica;
-        r.logInfo(
-                "Replica " + r.getId() +
+        replica.logInfo(
+                "Replica " + replica.getId() +
                         " received Election starter=" + _msg.starterId +
-                        " sender=" + r.getSenderRef() +
+                        " sender=" + replica.getSenderRef() +
                         " candidates=" + _msg.candidates.keySet());
         // save election message
         this.election = _msg;
@@ -173,7 +165,7 @@ public class ElectionManager {
             enterElectionState();
 
             // ack sender
-            r.getSenderRef().tell(new Messages.ElectionAck(), r.getSelfRef());
+            replica.getSenderRef().tell(new Messages.ElectionAck(), replica.getSelfRef());
 
             // add own data to the election message -> append node id and last seen message
             // (if all messages have been commited, take it from the commit history)
@@ -181,42 +173,41 @@ public class ElectionManager {
 
             // forward message to next node in the ring
             nextNodeId = getNextNodeId();
-            ActorRef nextNode = r.group.get(nextNodeId);
-            nextNode.tell(_msg, r.getSelfRef());
+            ActorRef nextNode = replica.group.get(nextNodeId);
+            nextNode.tell(_msg, replica.getSelfRef());
 
-            r.debugInfo(
-                    "Replica " + r.getId() +
+            replica.debugInfo(
+                    "Replica " + replica.getId() +
                             " forwarding to " + nextNodeId);
 
             // setup timer for the receiver ack
-            electionAckTimer = r.createTimer(new Messages.ElectionAckTimeout(), r.timerDuration);
+            electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.timerDuration);
 
         } else {
-            r.getSenderRef().tell(new Messages.ElectionAck(), r.getSelfRef());
+            replica.getSenderRef().tell(new Messages.ElectionAck(), replica.getSelfRef());
             // if the node was already in election, it means the message cycled back to it,
             // therefore it needs to check if it is the best candidate
-            if (r.getId() == getBestId(_msg)) {
+            if (replica.getId() == getBestId(_msg)) {
                 // if it is, elect it as coordinator
-                r.syncManager().startSynchronization(_msg);
+                replica.syncManager().startSynchronization();
             } else {
                 // forward message to next node in the ring
                 nextNodeId = getNextNodeId();
-                ActorRef nextNode = r.group.get(nextNodeId);
-                nextNode.tell(_msg, r.getSelfRef());
+                ActorRef nextNode = replica.group.get(nextNodeId);
+                nextNode.tell(_msg, replica.getSelfRef());
             }
         }
     }
 
     // append this node's id and last seen message clock to the election candidates
-    private void addOwnCandidate(Messages.Election e) {
-        Replica r = replica;
-        if (!r.toCommitQueue.isEmpty()) {
-            e.candidates.put(r.getId(), r.toCommitQueue.lastKey()); // toCommitQueue is a tree map, so is ordered by
+    private void addOwnCandidate(Messages.Election _msg) {
+        if (!replica.toCommitQueue.isEmpty()) {
+            _msg.candidates.put(replica.getId(), replica.toCommitQueue.lastKey()); // toCommitQueue is a tree map, so is ordered by
                                                                     // NodeClock, get latest
-        } else if (!r.commitHistory.isEmpty()) {
-            e.candidates.put(r.getId(), r.commitHistory.lastKey());
+        } else if (!replica.commitHistory.isEmpty()) {
+            _msg.candidates.put(replica.getId(), replica.commitHistory.lastKey());
         } else {
-            e.candidates.put(r.getId(), new Messages.NodeClock(0, 0)); // if no updates have been made yet, use default
+            _msg.candidates.put(replica.getId(), new Messages.NodeClock(0, 0)); // if no updates have been made yet, use default
                                                                        // clock
         }
     }
@@ -235,18 +226,17 @@ public class ElectionManager {
     }
 
     public void handleElectionAckTimeout(Messages.ElectionAckTimeout _msg) throws Exception {
-        Replica r = replica;
         // ACK to an election message was not received, add node to crashedReplicas
-        r.crashedReplicas.add(nextNodeId);
+        replica.crashedReplicas.add(nextNodeId);
 
         // retry now
         // forward message to next node in the ring (now skipping the crashed one)
         nextNodeId = getNextNodeId();
-        ActorRef nextNode = r.group.get(nextNodeId);
-        nextNode.tell(election, r.getSelfRef());
+        ActorRef nextNode = replica.group.get(nextNodeId);
+        nextNode.tell(election, replica.getSelfRef());
 
         // setup timer for the receiver ack
-        electionAckTimer = r.createTimer(new Messages.ElectionAckTimeout(), r.timerDuration);
+        electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.timerDuration);
     }
 
     // back to NORMAL state, invoked by the synchronization process
