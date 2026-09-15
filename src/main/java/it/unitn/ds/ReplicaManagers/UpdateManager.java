@@ -47,6 +47,31 @@ public class UpdateManager {
     // timer per request id, armed after forwarding the UpdateRequest
     private Map<String, Cancellable> updateTimers = new HashMap<>();
 
+    // GETTERS FOR TESTING PURPOSES
+    public int ackCountersSize() {
+        return ackCounters.size();
+    }
+
+    public int ackCountOf(Messages.NodeClock clock) {
+        return ackCounters.getOrDefault(clock, -1);
+    }
+
+    public boolean ackQuorumReached(Messages.NodeClock clock) {
+        return ackCountOf(clock) >= (Math.floor(replica.group.size() / 2) + 1);
+    }
+
+    public int writeOkTimersSize() {
+        return writeOkTimers.size();
+    }
+
+    public int updateTimersSize() {
+        return updateTimers.size();
+    }
+
+    public int pendingUpdateRequestsSize() {
+        return pendingUpdateRequests.size();
+    }
+
     public UpdateManager(Replica _replica) {
         this.replica = _replica;
     }
@@ -90,8 +115,9 @@ public class UpdateManager {
 
             // if is the coordinator who received the updateRequest, send an UPDATE to the
             // replicas
-            replica.broadcast(new Messages.Update(_msg.index, _msg.value, new Messages.NodeClock(replica.epoch, replica.seqNum),
-                    _msg.client, requestId));
+            replica.broadcast(
+                    new Messages.Update(_msg.index, _msg.value, new Messages.NodeClock(replica.epoch, replica.seqNum),
+                            _msg.client, requestId));
         } else {
             // THIS IS NOT THE COORDINATOR
             // - forward the request to the coordinator
@@ -239,7 +265,8 @@ public class UpdateManager {
             Set<Messages.NodeClock> pending = myClients.get(client);
             if (pending != null && pending.remove(clock)) {
                 Messages.UpdateData clientData = replica.commitHistory.get(clock);
-                replica.sendTo(new AbstractClient.WriteResult(true, clientData.index, clientData.value, replica.getId()),
+                replica.sendTo(
+                        new AbstractClient.WriteResult(true, clientData.index, clientData.value, replica.getId()),
                         client);
                 if (pending.isEmpty())
                     myClients.remove(client);

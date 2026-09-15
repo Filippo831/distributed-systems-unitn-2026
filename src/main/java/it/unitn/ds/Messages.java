@@ -20,7 +20,7 @@ public class Messages {
         }
     }
 
-    public static class NodeClock implements Comparable<NodeClock>{
+    public static class NodeClock implements Comparable<NodeClock> {
         public int epoch;
         public int seqNum;
 
@@ -128,7 +128,7 @@ public class Messages {
         public final NodeClock clock;
         public final ActorRef client;
 
-         public final String id;
+        public final String id;
 
         public Update(int _index, int _value, NodeClock _clock, ActorRef _client, String _id) {
             index = _index;
@@ -161,7 +161,8 @@ public class Messages {
     }
 
     public static class Election {
-        // this will contain a map of node id and node clock, where node clock represents last message seen by that node
+        // this will contain a map of node id and node clock, where node clock
+        // represents last message seen by that node
         public final Map<Integer, Messages.NodeClock> candidates = new HashMap<>();
         // id of the node that started this election
         public int starterId = -1;
@@ -175,16 +176,19 @@ public class Messages {
     public static class Synchronization implements Serializable {
         // new coordinator id
         public int newCoordId;
-        // this message will contain the coordinator history used by the nodes to get up to date before starting the new epoch
+        // this message will contain the coordinator history used by the nodes to get up
+        // to date before starting the new epoch
         public Map<Messages.NodeClock, Messages.UpdateData> coordHistory;
     }
 
-    public static class UpdateSyncRequest {}
+    public static class UpdateSyncRequest {
+    }
+
     public static class UpdateSyncResponse {
         public Map<Messages.NodeClock, Messages.UpdateData> updateHistory;
         int id;
 
-        public UpdateSyncResponse(int _id, Map<Messages.NodeClock, Messages.UpdateData> _updateHistory){
+        public UpdateSyncResponse(int _id, Map<Messages.NodeClock, Messages.UpdateData> _updateHistory) {
             this.id = _id;
             this.updateHistory = _updateHistory;
         }
@@ -193,14 +197,61 @@ public class Messages {
             return id;
         }
     }
-    
+
     // Create empty classes to handle timeouts
     // REPLICA timeouts
-    public static class HeartbeatTimeout {}
-    public static class UpdateTimeout {}
-    public static class WriteOkTimeout {}
-    public static class ElectionTimeout {}
-    public static class ElectionAckTimeout {}
-    public static class UpdateSyncTimeout {}
+    public static class HeartbeatTimeout {
+    }
 
+    public static class UpdateTimeout {
+    }
+
+    public static class WriteOkTimeout {
+    }
+
+    public static class ElectionTimeout {
+    }
+
+    public static class ElectionAckTimeout {
+    }
+
+    public static class UpdateSyncTimeout {
+    }
+
+    // MESSAGES FOR TESTING
+    public static class StateInfoRequest implements Serializable {
+    }
+
+    public static class StateInfoResponse implements Serializable {
+        public final int replicaId;
+        public final int coordinatorId;
+        public final int epoch;
+        public final int seqNum;
+        public final int commitHistorySize;
+        public final int toCommitQueueSize;
+        public final int ackCountersSize;
+        public final int latestAckCount;
+        public final boolean ackQuorumReached;
+        public final int writeOkTimersSize;
+        public final int updateTimersSize;
+        public final int pendingUpdateRequestsSize;
+
+        // full constructor assigning all final fields
+        public StateInfoResponse(int _replicaId, int _coordinatorId, int _epoch, int _seqNum, int _commitHistorySize,
+                int _toCommitQueueSize, int _ackCountersSize, int _latestAckCount, boolean _ackQuorumReached,
+                int _writeOkTimersSize, int _updateTimersSize, int _pendingUpdateRequestsSize) {
+            replicaId = _replicaId;
+            coordinatorId = _coordinatorId;
+            epoch = _epoch;
+            seqNum = _seqNum;
+            commitHistorySize = _commitHistorySize;
+            toCommitQueueSize = _toCommitQueueSize;
+            ackCountersSize = _ackCountersSize;
+            latestAckCount = _latestAckCount;
+            ackQuorumReached = _ackQuorumReached;
+            writeOkTimersSize = _writeOkTimersSize;
+            updateTimersSize = _updateTimersSize;
+            pendingUpdateRequestsSize = _pendingUpdateRequestsSize;
+        }
+    }
 }

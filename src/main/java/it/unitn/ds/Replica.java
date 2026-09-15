@@ -242,6 +242,7 @@ public class Replica extends AbstractReplica {
                 .match(Messages.UpdateTimeout.class, this::handleUpdateTimeout)
                 .match(Messages.WriteOkTimeout.class, this::handleWriteOkTimeout)
                 .match(Messages.ReadRequest.class, this::handleReadRequest)
+                .match(Messages.StateInfoRequest.class, this::handleStateInfoRequest)
                 .build();
     }
 
@@ -289,6 +290,21 @@ public class Replica extends AbstractReplica {
     // handle heartbeat message timeout -> coordinator crashed!
     public final void handleHeartbeatTimeout(Messages.HeartbeatTimeout _msg) {
         electionManager.startElection();
+    }
+
+    // Handler for testing
+    private final void handleStateInfoRequest(Messages.StateInfoRequest _msg) {
+        Messages.NodeClock latest = (seqNum > 0) ? new Messages.NodeClock(epoch, seqNum) : null;
+        getSenderRef().tell(new Messages.StateInfoResponse(
+                id, coordinatorId, epoch, seqNum,
+                commitHistory.size(), toCommitQueue.size(),
+                updateManager().ackCountersSize(),
+                latest == null ? -1 : updateManager().ackCountOf(latest),
+                latest != null && updateManager().ackQuorumReached(latest),
+                updateManager().writeOkTimersSize(),
+                updateManager().updateTimersSize(),
+                updateManager().pendingUpdateRequestsSize()),
+                getSelfRef());
     }
 
     // =================================================================================
