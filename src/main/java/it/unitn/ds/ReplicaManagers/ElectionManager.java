@@ -70,8 +70,12 @@ public class ElectionManager {
 
         } while (nextId == replica.coordinatorId || replica.crashedReplicas.contains(nextId)); // ignore coordinatorId
                                                                                                // and crashed
-        // replicas
-
+        // print the decision
+        replica.debugInfo(
+                "Replica " + replica.getId() +
+                        " next node in the ring is " + nextId +
+                        " (coordinator=" + replica.coordinatorId +
+                        ", crashed=" + replica.crashedReplicas + ")");
         // return
         return nextId;
     }
@@ -139,7 +143,7 @@ public class ElectionManager {
         // reset election message and coordinator id
         this.electionEpoch += 1;
         this.electionStarterId = replica.getId();
-        Messages.Election election = new Messages.Election(replica.getId(), this.electionEpoch);
+        this.election = new Messages.Election(replica.getId(), this.electionEpoch);
         replica.coordinatorId = -1;
 
         // append node id and last seen message
@@ -148,7 +152,7 @@ public class ElectionManager {
         // forward message to next node in the ring
         nextNodeId = getNextNodeId();
         ActorRef nextNode = replica.group.get(nextNodeId);
-        nextNode.tell(election, replica.getSelfRef());
+        nextNode.tell(this.election, replica.getSelfRef());
 
         // start timer for ack of the receiver
         electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.timerDuration);
@@ -262,6 +266,9 @@ public class ElectionManager {
     }
 
     public void handleElectionAckTimeout(Messages.ElectionAckTimeout _msg) throws Exception {
+        replica.debugInfo(
+                "Election ACK timeout on replica " + replica.getId() +
+                        " waiting for ACK from " + nextNodeId);
         // ACK to an election message was not received, add node to crashedReplicas
         replica.crashedReplicas.add(nextNodeId);
 
