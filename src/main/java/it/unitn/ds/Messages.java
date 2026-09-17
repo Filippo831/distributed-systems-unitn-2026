@@ -165,8 +165,13 @@ public class Messages {
         // represents last message seen by that node
         public final Map<Integer, Messages.NodeClock> candidates = new HashMap<>();
         // id of the node that started this election
-        public int starterId = -1;
+        public int starterId;
+        public int electionEpoch;
 
+        public Election(int _starterId, int _electionEpoch) {
+            starterId = _starterId;
+            electionEpoch = _electionEpoch;
+        }
     }
 
     public static class ElectionAck implements Serializable {

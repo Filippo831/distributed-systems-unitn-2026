@@ -42,7 +42,8 @@ public class HeartbeatManager {
 
         // staggering time applied to the heartbeat timeout to avoid all nodes to fire
         // the timeout at the same time
-        int staggeringTime = (int) (replica.getId() * (500.0 / replica.group.size()));
+        // int staggeringTime = (int) (replica.getId() * (500.0 / replica.group.size()));
+        int staggeringTime = 0;
 
         // start new one
         heartbeatTimer = replica.createTimer(new Messages.HeartbeatTimeout(),

@@ -17,8 +17,7 @@ import it.unitn.ds.Replica;
 public class ElectionManager {
     private final Replica replica;
 
-    // election message, will contain coordinator candidates
-    private Messages.Election election = new Messages.Election();
+    private Messages.Election election = null;
 
     // starts after forwarding election message to the next node in the ring, wait
     // for ACK message from receiver
@@ -32,6 +31,12 @@ public class ElectionManager {
     private boolean inElection = false;
 
     private int nextNodeId;
+
+    // keep track of the lowest election id initiator. The smallest wins
+    private int electionEpoch = -1;
+
+    // keep track of the message initiator id
+    private int electionStarterId = -1;
 
     public ElectionManager(Replica _replica) {
         this.replica = _replica;
@@ -63,8 +68,9 @@ public class ElectionManager {
                 break;
             }
 
-        } while (nextId == replica.coordinatorId || replica.crashedReplicas.contains(nextId)); // ignore coordinatorId and crashed
-                                                                                    // replicas
+        } while (nextId == replica.coordinatorId || replica.crashedReplicas.contains(nextId)); // ignore coordinatorId
+                                                                                               // and crashed
+        // replicas
 
         // return
         return nextId;
@@ -116,7 +122,8 @@ public class ElectionManager {
         // cancel all timers, not needed anymore
         replica.cancelAllTimers();
 
-        electionTimer = replica.createTimer(new Messages.ElectionTimeout(), replica.timerDuration * replica.group.size());
+        electionTimer = replica.createTimer(new Messages.ElectionTimeout(),
+                replica.timerDuration * replica.group.size());
     }
 
     // entry point for the timeout handlers: switch to election state and start the
@@ -130,9 +137,10 @@ public class ElectionManager {
 
     public void startElectionProtocol() {
         // reset election message and coordinator id
-        election = new Messages.Election();
+        this.electionEpoch += 1;
+        this.electionStarterId = replica.getId();
+        Messages.Election election = new Messages.Election(replica.getId(), this.electionEpoch);
         replica.coordinatorId = -1;
-        election.starterId = replica.getId();
 
         // append node id and last seen message
         addOwnCandidate(election);
@@ -154,9 +162,31 @@ public class ElectionManager {
                 "Replica " + replica.getId() +
                         " received Election starter=" + _msg.starterId +
                         " sender=" + replica.getSenderRef() +
+                        " electionEpoch=" + _msg.electionEpoch +
                         " candidates=" + _msg.candidates.keySet());
         // save election message
         this.election = _msg;
+
+        if (_msg.electionEpoch < this.electionEpoch) {
+            replica.debugInfo(
+                    "Replica " + replica.getId() +
+                            " ignoring election message with lower epoch " + _msg.electionEpoch +
+                            " than current epoch " + this.electionEpoch);
+            return;
+        }
+        // check if teh election message epoch is equal but the starter id is lower than
+        // the current one, if so, ignore it
+        else if (_msg.electionEpoch == this.electionEpoch && _msg.starterId < this.electionStarterId) {
+            replica.debugInfo(
+                    "Replica " + replica.getId() +
+                            " ignoring election message with equal epoch " + _msg.electionEpoch +
+                            " but lower starter id " + _msg.starterId +
+                            " than current starter id " + this.electionStarterId);
+            return;
+        }
+
+        this.electionEpoch = _msg.electionEpoch;
+        this.electionStarterId = _msg.starterId;
 
         // if node still in NORMAL state, enter ELECTION state and handle election
         // message
@@ -166,6 +196,9 @@ public class ElectionManager {
 
             // ack sender
             replica.getSenderRef().tell(new Messages.ElectionAck(), replica.getSelfRef());
+
+            // check if the election message epoch is lower than the current one, if so,
+            // ignore it
 
             // add own data to the election message -> append node id and last seen message
             // (if all messages have been commited, take it from the commit history)
@@ -192,6 +225,7 @@ public class ElectionManager {
                 replica.syncManager().startSynchronization();
             } else {
                 // forward message to next node in the ring
+                addOwnCandidate(_msg);
                 nextNodeId = getNextNodeId();
                 ActorRef nextNode = replica.group.get(nextNodeId);
                 nextNode.tell(_msg, replica.getSelfRef());
@@ -202,13 +236,15 @@ public class ElectionManager {
     // append this node's id and last seen message clock to the election candidates
     private void addOwnCandidate(Messages.Election _msg) {
         if (!replica.toCommitQueue.isEmpty()) {
-            _msg.candidates.put(replica.getId(), replica.toCommitQueue.lastKey()); // toCommitQueue is a tree map, so is ordered by
-                                                                    // NodeClock, get latest
+            _msg.candidates.put(replica.getId(), replica.toCommitQueue.lastKey()); // toCommitQueue is a tree map, so is
+                                                                                   // ordered by
+            // NodeClock, get latest
         } else if (!replica.commitHistory.isEmpty()) {
             _msg.candidates.put(replica.getId(), replica.commitHistory.lastKey());
         } else {
-            _msg.candidates.put(replica.getId(), new Messages.NodeClock(0, 0)); // if no updates have been made yet, use default
-                                                                       // clock
+            _msg.candidates.put(replica.getId(), new Messages.NodeClock(0, 0)); // if no updates have been made yet, use
+                                                                                // default
+            // clock
         }
     }
 

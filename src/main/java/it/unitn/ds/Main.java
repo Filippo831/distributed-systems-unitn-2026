@@ -2,7 +2,6 @@ package it.unitn.ds;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
 
 import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
@@ -12,17 +11,18 @@ public class Main {
 
     public static void main(String[] args) throws InterruptedException {
         System.out.println("========================================");
-        System.out.println("START");
+        System.out.println("START: callbackOnCoordinatorElectedAllAgree (coordinator=0, n_nodes=5)");
         System.out.println("========================================\n");
-        final int N_REPLICAS = 22;
-        final int COORDINATOR_ID = 0;   // same variants as the test: (1,7) or (0,22)
-        final int TARGET_REPLICA_ID = N_REPLICAS - 1;
+
+        final int N_REPLICAS = 5;
+        final int COORDINATOR_ID = 0;
 
         Logger.setDestinationStdout();
         Logger.setDebugEnabled(true);
 
-        final ActorSystem system = ActorSystem.create("DebugCoordinatorCrash");
+        final ActorSystem system = ActorSystem.create("callbackCoordElected_0_5");
 
+        // --- Create replicas (same as TestsCommons.createTestSystem) ---
         Map<Integer, ActorRef> replicas = new HashMap<>(N_REPLICAS);
         for (int i = 0; i < N_REPLICAS; i++) {
             replicas.put(i, system.actorOf(
@@ -38,31 +38,21 @@ public class Main {
 
         Thread.sleep(500); // let initSystem run + coordinator start heartbeats
 
-        ActorRef client = system.actorOf(
-                Client.props(AbstractReplica.MAX_LATENCY * N_REPLICAS * 8, 30000,
-                        Optional.of(replicas.get(TARGET_REPLICA_ID))),
-                "client");
+        // --- Crash coordinator (same as test) ---
+        System.out.println(">>> Crashing coordinator " + COORDINATOR_ID);
+        replicas.get(COORDINATOR_ID).tell(
+                new AbstractReplica.Crash(AbstractReplica.Crash.Type.Now, 0), ActorRef.noSender());
 
-        // STEP 1: crash coordinator + 2 other replicas (same as the test)
-        System.out.println(">>> STEP 1: crashing replicas 0,1,2 (coordinator " + COORDINATOR_ID + " included)");
-        for (int i = 0; i < 3; i++) {
-            replicas.get(i).tell(new AbstractReplica.Crash(AbstractReplica.Crash.Type.Now, 0), ActorRef.noSender());
-        }
-        Thread.sleep(200);
+        // --- Wait for election (same window as TestsCommons.getElectionMaxDelay) ---
+        long electionMaxDelay = (long) (AbstractReplica.COORDINATOR_BEAT_INTERVAL * 3.0)
+                + ((long) AbstractReplica.MAX_LATENCY * N_REPLICAS * 2);
+        long ringHops = (long) N_REPLICAS * AbstractReplica.MAX_LATENCY * 2;
+        long window = (electionMaxDelay + ringHops) * 5;
 
-        // STEP 2: client writes to replica N-1 -> forwarded to dead coordinator
-        //         -> UpdateTimeout -> election -> sync -> pending resend -> commit
-        System.out.println(">>> STEP 2: client write (index=0, value=10) to replica " + TARGET_REPLICA_ID);
-        client.tell(new AbstractClient.WriteRequest(0, 10), ActorRef.noSender());
+        System.out.println(">>> Waiting " + window + "ms for election to complete...");
+        Thread.sleep(window);
 
-        // STEP 3: wait for crash detection (~2s heartbeat / 45ms UpdateTimeout) + election + sync + resend
-        Thread.sleep(8000);
-
-        // STEP 4: read back from the same replica
-        System.out.println(">>> STEP 4: client read (index=0) to replica " + TARGET_REPLICA_ID);
-        client.tell(new AbstractClient.ReadRequest(0), ActorRef.noSender());
-
-        Thread.sleep(3000);
+        System.out.println(">>> Election window elapsed. Terminating system.");
         system.terminate();
 
         System.out.println("\n========================================");
