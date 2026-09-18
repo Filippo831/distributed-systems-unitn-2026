@@ -76,7 +76,7 @@ public class Main {
                     + " state: writeOkTimers=" + s.writeOkTimersSize
                     + " commitHistory=" + s.commitHistorySize
                     + " coordinator=" + s.coordinatorId);
-            if (s.writeOkTimersSize >= 1 && s.commitHistorySize == 1) {
+            if (s.writeOkTimersSize >= 1) {
                 conditionMet = true;
                 break;
             }

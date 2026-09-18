@@ -74,17 +74,6 @@ public class Client extends AbstractClient {
         Messages.ReadRequest message = new Messages.ReadRequest(index, getSelf());
         replica.tell(message, getSelf());
 
-        // if (readTimer != null && !readTimer.isCancelled()) {
-        //     readTimer.cancel();
-        // }
-        //
-        // readTimer = getContext().getSystem().scheduler().scheduleOnce(
-        //         scala.concurrent.duration.Duration.create(getReadTimeoutDelay(), "milliseconds"),
-        //         getSelf(),
-        //         new AbstractClient.ReadTimeout(getSelf(), replica, index),
-        //         getContext().getSystem().dispatcher(),
-        //         getSelf()
-        // );
         // add a timer for this index to the map
         if (readTimer == null) {
             readTimer = new java.util.HashMap<>();
@@ -114,17 +103,6 @@ public class Client extends AbstractClient {
         Messages.UpdateRequest message = new Messages.UpdateRequest(index, value, getSelf(), false);
         replica.tell(message, getSelf());
 
-        // if (writeTimer != null && !writeTimer.isCancelled()) {
-        //     writeTimer.cancel();
-        // }
-        //
-        // writeTimer = getContext().getSystem().scheduler().scheduleOnce(
-        //         scala.concurrent.duration.Duration.create(getWriteTimeoutDelay(), "milliseconds"),
-        //         getSelf(),
-        //         new AbstractClient.WriteTimeout(getSelf(), replica, index, value),
-        //         getContext().getSystem().dispatcher(),
-        //         getSelf()
-        // );
         // add a timer for this index and value to the map
         if (writeTimer == null) {
             writeTimer = new java.util.HashMap<>();

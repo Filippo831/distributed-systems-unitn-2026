@@ -212,8 +212,25 @@ public class UpdateManager {
                     // send the writeOk to all the others
                     replica.broadcast(new Messages.WriteOk(clockToCommit));
 
+                    // send the WriteResult back to the client who requested the change
+                    ActorRef originatingClient = updateClients.get(clockToCommit);
+                    if (originatingClient != null) {
+                        int clientId = replica.group.entrySet().stream()
+                                .filter(entry -> entry.getValue().equals(originatingClient))
+                                .map(Map.Entry::getKey)
+                                .findFirst().orElse(-1);
+
+                        replica.logInfo("coordinator sending back the message to the client with id: " + clientId);
+                        if (clientId >= 0) {
+                            replica.sendTo(
+                                    new AbstractClient.WriteResult(true, dataToCommit.index, dataToCommit.value,
+                                            clientId),
+                                    originatingClient);
+                        }
+                    }
+
                     // send the writeOk to the client if it is this node's client
-                    notifyClient(clockToCommit);
+                    // notifyClient(clockToCommit);
 
                     this.ackCounters.remove(clockToCommit);
                 }
@@ -247,7 +264,7 @@ public class UpdateManager {
             readyToCommit.remove(clockToCommit);
 
             // send the writeOk to the client if it is this node's client
-            notifyClient(clockToCommit);
+            // notifyClient(clockToCommit);
         }
     }
 
