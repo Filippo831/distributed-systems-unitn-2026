@@ -1,12 +1,9 @@
 package it.unitn.ds.ReplicaManagers;
 
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
 import java.util.TreeMap;
 
 import akka.actor.ActorRef;
-import akka.actor.Cancellable;
 import it.unitn.ds.Messages;
 import it.unitn.ds.Replica;
 
@@ -19,12 +16,12 @@ public class SyncManager {
     private final Replica replica;
 
     // complete up to date history gathered from all replicas
-    private Map<Messages.NodeClock, Messages.UpdateData> completeHistory = new TreeMap<>();
+   //private Map<Messages.NodeClock, Messages.UpdateData> completeHistory = new TreeMap<>();
 
-    private Cancellable updateSyncTimer = null;
+    //private Cancellable updateSyncTimer = null;
 
     // ids of the replicas that replied to the UpdateSyncRequest
-    private Set<Integer> updateSyncResponses = new HashSet<>();
+    //private Set<Integer> updateSyncResponses = new HashSet<>();
 
     public SyncManager(Replica _replica) {
         this.replica = _replica;
@@ -34,23 +31,29 @@ public class SyncManager {
     // histories from all the other replicas to build the complete history
     public void startSynchronization() {
         // clean variables
-        updateSyncResponses.clear();
-        completeHistory.clear();
+        //updateSyncResponses.clear();
+        //completeHistory.clear();
 
         replica.debugInfo("Replica " + replica.getId() + " elected coordinator");
 
         // cleanup of timers + setup new cooridnator
         replica.cancelAllTimers();
 
-        // add rertrival of complete upate history from replicas
-        for (Map.Entry<Integer, ActorRef> node : replica.group.entrySet()) {
-            if (!replica.crashedReplicas.contains(node.getKey()) && node.getKey() != replica.getId()) {
-                node.getValue().tell(new Messages.UpdateSyncRequest(), replica.getSelfRef());
-            }
-        }
+        // // add rertrival of complete upate history from replicas
+        // for (Map.Entry<Integer, ActorRef> node : replica.group.entrySet()) {
+        //     if (!replica.crashedReplicas.contains(node.getKey()) && node.getKey() != replica.getId()) {
+        //         node.getValue().tell(new Messages.UpdateSyncRequest(), replica.getSelfRef());
+        //     }
+        // }
+        
+        // // setup timer for the receiver ack
+        // updateSyncTimer = replica.createTimer(new Messages.UpdateSyncTimeout(), replica.timerDuration);
 
-        // setup timer for the receiver ack
-        updateSyncTimer = replica.createTimer(new Messages.UpdateSyncTimeout(), replica.timerDuration);
+        try {
+            this.finishSynchronization();
+        } catch (Exception ex) {
+            System.getLogger(SyncManager.class.getName()).log(System.Logger.Level.ERROR, (String) null, ex);
+        }
     }
 
     private void finishSynchronization() throws Exception {
@@ -62,8 +65,9 @@ public class SyncManager {
         replica.coordinatorId = replica.getId();
         replica.onCoordinatorElected(replica.coordinatorId);
 
-        // add to complte history the coordinator history, now it is complete
-        completeHistory.putAll(replica.commitHistory);
+        // complete history
+        Map<Messages.NodeClock, Messages.UpdateData> completeHistory = new TreeMap<>(replica.commitHistory);
+        //completeHistory.putAll(replica.commitHistory);
         completeHistory.putAll(replica.toCommitQueue);
 
         // complete history contains commited and still uncommitted updates
@@ -131,46 +135,46 @@ public class SyncManager {
         replica.updateManager().resendPendingUpdateRequests();
     }
 
-    public void handleUpdateSyncRequest(Messages.UpdateSyncRequest _msg) {
-        Map<Messages.NodeClock, Messages.UpdateData> history = new TreeMap<>(replica.commitHistory);
-        history.putAll(replica.toCommitQueue);
+    // public void handleUpdateSyncRequest(Messages.UpdateSyncRequest _msg) {
+    //     Map<Messages.NodeClock, Messages.UpdateData> history = new TreeMap<>(replica.commitHistory);
+    //     history.putAll(replica.toCommitQueue);
 
-        // now history contains toCommitQueue and commitHistory of the replica and can
-        // send it back to the cooridnator
-        replica.getSenderRef().tell(new Messages.UpdateSyncResponse(replica.getId(), history), replica.getSelfRef());
-    }
+    //     // now history contains toCommitQueue and commitHistory of the replica and can
+    //     // send it back to the cooridnator
+    //     replica.getSenderRef().tell(new Messages.UpdateSyncResponse(replica.getId(), history), replica.getSelfRef());
+    // }
 
-    public void handleUpdateSyncResponse(Messages.UpdateSyncResponse _msg) {
-        // add history of the replica to the complete history
-        completeHistory.putAll(_msg.updateHistory);
+    // public void handleUpdateSyncResponse(Messages.UpdateSyncResponse _msg) {
+    //     // add history of the replica to the complete history
+    //     completeHistory.putAll(_msg.updateHistory);
 
-        updateSyncResponses.add(_msg.getId());
+    //     updateSyncResponses.add(_msg.getId());
 
-        if (updateSyncResponses.size() == replica.group.size() - 1 - replica.crashedReplicas.size()) {
-            updateSyncTimer.cancel();
-            try {
-                finishSynchronization();
-            } catch (Exception ex) {
-                replica.logInfo("Update sync failed (handleUpdateSyncResponse)");
-            }
-        }
-    }
+    //     if (updateSyncResponses.size() == replica.group.size() - 1 - replica.crashedReplicas.size()) {
+    //         updateSyncTimer.cancel();
+    //         try {
+    //             finishSynchronization();
+    //         } catch (Exception ex) {
+    //             replica.logInfo("Update sync failed (handleUpdateSyncResponse)");
+    //         }
+    //     }
+    // }
 
-    public void handleUpdateSyncTimeout(Messages.UpdateSyncTimeout _msg) {
-        for (Integer id : replica.group.keySet()) {
-            if (id != replica.getId() && !replica.crashedReplicas.contains(id) && !updateSyncResponses.contains(id)) {
-                replica.crashedReplicas.add(id);
-            }
-        }
-        try {
-            finishSynchronization();
-        } catch (Exception ex) {
-            replica.logInfo("Update sync failed (handleUpdateSyncTimeout)");
-        }
-    }
+    // public void handleUpdateSyncTimeout(Messages.UpdateSyncTimeout _msg) {
+    //     for (Integer id : replica.group.keySet()) {
+    //         if (id != replica.getId() && !replica.crashedReplicas.contains(id) && !updateSyncResponses.contains(id)) {
+    //             replica.crashedReplicas.add(id);
+    //         }
+    //     }
+    //     try {
+    //         finishSynchronization();
+    //     } catch (Exception ex) {
+    //         replica.logInfo("Update sync failed (handleUpdateSyncTimeout)");
+    //     }
+    // }
 
-    public void cancelTimers() {
-        if (updateSyncTimer != null)
-            updateSyncTimer.cancel();
-    }
+    // public void cancelTimers() {
+    //     if (updateSyncTimer != null)
+    //         updateSyncTimer.cancel();
+    // }
 }

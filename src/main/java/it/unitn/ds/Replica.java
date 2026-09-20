@@ -255,14 +255,14 @@ public class Replica extends AbstractReplica {
                 .match(Messages.ElectionAck.class, electionManager::handleElectionAck)
                 .match(Messages.Synchronization.class, syncManager::handleSynchronization)
 
-                .match(Messages.UpdateSyncRequest.class, syncManager::handleUpdateSyncRequest)
-                .match(Messages.UpdateSyncResponse.class, syncManager::handleUpdateSyncResponse)
+                // .match(Messages.UpdateSyncRequest.class, syncManager::handleUpdateSyncRequest)
+                // .match(Messages.UpdateSyncResponse.class, syncManager::handleUpdateSyncResponse)
 
                 // also handle the timeouts
                 .match(Messages.ElectionTimeout.class, electionManager::handleElectionTimeout)
                 .match(Messages.ElectionAckTimeout.class, electionManager::handleElectionAckTimeout)
 
-                .match(Messages.UpdateSyncTimeout.class, syncManager::handleUpdateSyncTimeout)
+                //.match(Messages.UpdateSyncTimeout.class, syncManager::handleUpdateSyncTimeout)
                 .build();
     }
 

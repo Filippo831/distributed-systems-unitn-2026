@@ -186,22 +186,22 @@ public class Messages {
         public Map<Messages.NodeClock, Messages.UpdateData> coordHistory;
     }
 
-    public static class UpdateSyncRequest {
-    }
+    // public static class UpdateSyncRequest {
+    // }
 
-    public static class UpdateSyncResponse {
-        public Map<Messages.NodeClock, Messages.UpdateData> updateHistory;
-        int id;
+    // public static class UpdateSyncResponse {
+    //     public Map<Messages.NodeClock, Messages.UpdateData> updateHistory;
+    //     int id;
 
-        public UpdateSyncResponse(int _id, Map<Messages.NodeClock, Messages.UpdateData> _updateHistory) {
-            this.id = _id;
-            this.updateHistory = _updateHistory;
-        }
+    //     public UpdateSyncResponse(int _id, Map<Messages.NodeClock, Messages.UpdateData> _updateHistory) {
+    //         this.id = _id;
+    //         this.updateHistory = _updateHistory;
+    //     }
 
-        public int getId() {
-            return id;
-        }
-    }
+    //     public int getId() {
+    //         return id;
+    //     }
+    // }
 
     // Create empty classes to handle timeouts
     // REPLICA timeouts
@@ -220,8 +220,8 @@ public class Messages {
     public static class ElectionAckTimeout {
     }
 
-    public static class UpdateSyncTimeout {
-    }
+    // public static class UpdateSyncTimeout {
+    // }
 
     // MESSAGES FOR TESTING
     public static class StateInfoRequest implements Serializable {

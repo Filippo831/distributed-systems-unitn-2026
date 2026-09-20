@@ -110,6 +110,9 @@ public class ElectionManager {
             return;
         }
 
+        // update election epoch here
+        this.electionEpoch += 1;
+
         // callback
         replica.onElectionStarted(replica.coordinatorId);
 
@@ -141,7 +144,7 @@ public class ElectionManager {
 
     public void startElectionProtocol() {
         // reset election message and coordinator id
-        this.electionEpoch += 1;
+        // this.electionEpoch += 1; removed as fail-and-retry will increase it but we do no0t want that
         this.electionStarterId = replica.getId();
         this.election = new Messages.Election(replica.getId(), this.electionEpoch);
         replica.coordinatorId = -1;
@@ -176,6 +179,8 @@ public class ElectionManager {
                     "Replica " + replica.getId() +
                             " ignoring election message with lower epoch " + _msg.electionEpoch +
                             " than current epoch " + this.electionEpoch);
+            // still need to ACK sender so it knows this node is alive
+            replica.getSenderRef().tell(new Messages.ElectionAck(), replica.getSelfRef());
             return;
         }
         // check if teh election message epoch is equal but the starter id is lower than
@@ -186,6 +191,8 @@ public class ElectionManager {
                             " ignoring election message with equal epoch " + _msg.electionEpoch +
                             " but lower starter id " + _msg.starterId +
                             " than current starter id " + this.electionStarterId);
+             // still need to ACK sender so it knows this node is alive
+            replica.getSenderRef().tell(new Messages.ElectionAck(), replica.getSelfRef());
             return;
         }
 
@@ -197,19 +204,24 @@ public class ElectionManager {
         if (!inElection) {
             // go to election state
             enterElectionState();
+        }
 
-            // ack sender
-            replica.getSenderRef().tell(new Messages.ElectionAck(), replica.getSelfRef());
+        // ack sender
+        replica.getSenderRef().tell(new Messages.ElectionAck(), replica.getSelfRef());
 
-            // check if the election message epoch is lower than the current one, if so,
-            // ignore it
+        // check if the election message epoch is lower than the current one, if so, ignore it
 
+        // if the message contains my ID, that means it cycled back to me (travelled along all nodes)
+        // otherwise, i never saw it and need to add myself as a candidate
+        if (!_msg.candidates.containsKey(replica.getId())) {
             // add own data to the election message -> append node id and last seen message
             // (if all messages have been commited, take it from the commit history)
             addOwnCandidate(_msg);
 
-            // forward message to next node in the ring
+            // get next node in the ring
             nextNodeId = getNextNodeId();
+
+            // forward message to next node in the ring
             ActorRef nextNode = replica.group.get(nextNodeId);
             nextNode.tell(_msg, replica.getSelfRef());
 
@@ -221,7 +233,7 @@ public class ElectionManager {
             electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.timerDuration);
 
         } else {
-            replica.getSenderRef().tell(new Messages.ElectionAck(), replica.getSelfRef());
+            //replica.getSenderRef().tell(new Messages.ElectionAck(), replica.getSelfRef()); already did above
             // if the node was already in election, it means the message cycled back to it,
             // therefore it needs to check if it is the best candidate
             if (replica.getId() == getBestId(_msg)) {
@@ -229,12 +241,15 @@ public class ElectionManager {
                 replica.syncManager().startSynchronization();
             } else {
                 // forward message to next node in the ring
-                addOwnCandidate(_msg);
+                // addOwnCandidate(_msg); not needed, already there
                 nextNodeId = getNextNodeId();
                 ActorRef nextNode = replica.group.get(nextNodeId);
                 nextNode.tell(_msg, replica.getSelfRef());
+
+                // create a timer
+                electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.timerDuration);
             }
-        }
+         }
     }
 
     // append this node's id and last seen message clock to the election candidates

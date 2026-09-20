@@ -127,6 +127,11 @@ public class UpdateManager {
             // myClients -> <ActorRef, Messages.NodeClock> -> NodeClock is null, will be
             // assigned by coordinator
             this.myClients.computeIfAbsent(_msg.client, k -> new HashSet<>());
+            
+            // if the message is a retry, delete old entry to avoid duplication in the future
+            if (_msg.id != null) {
+                pendingUpdateRequests.remove(_msg.id);
+            }
 
             // create a unique ID for the request
             String requestId = replica.getId() + "-" + UUID.randomUUID();
