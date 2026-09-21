@@ -167,10 +167,12 @@ public class Messages {
         // id of the node that started this election
         public int starterId;
         public int electionEpoch;
+        public int nodeEndingEpoch;
 
-        public Election(int _starterId, int _electionEpoch) {
+        public Election(int _starterId, int _electionEpoch, int _nodeEndingEpoch) {
             starterId = _starterId;
             electionEpoch = _electionEpoch;
+            nodeEndingEpoch = _nodeEndingEpoch;
         }
     }
 

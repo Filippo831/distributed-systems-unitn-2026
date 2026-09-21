@@ -146,7 +146,7 @@ public class ElectionManager {
         // reset election message and coordinator id
         // this.electionEpoch += 1; removed as fail-and-retry will increase it but we do no0t want that
         this.electionStarterId = replica.getId();
-        this.election = new Messages.Election(replica.getId(), this.electionEpoch);
+        this.election = new Messages.Election(replica.getId(), this.electionEpoch, replica.epoch);
         replica.coordinatorId = -1;
 
         // append node id and last seen message
@@ -171,6 +171,16 @@ public class ElectionManager {
                         " sender=" + replica.getSenderRef() +
                         " electionEpoch=" + _msg.electionEpoch +
                         " candidates=" + _msg.candidates.keySet());
+
+        if (_msg.nodeEndingEpoch < replica.epoch) {
+            replica.debugInfo(
+                    "Replica " + replica.getId() +
+                            " ignoring election message with lower node epoch " + _msg.nodeEndingEpoch +
+                            " than current epoch " + replica.epoch);
+            // still need to ACK sender so it knows this node is alive
+            replica.getSenderRef().tell(new Messages.ElectionAck(), replica.getSelfRef());
+            return;
+        }
 
         if (_msg.electionEpoch < this.electionEpoch) {
             replica.debugInfo(
@@ -279,6 +289,7 @@ public class ElectionManager {
         // soemthing went wrong during the election, retry
         replica.debugInfo(
                 "Election timeout on replica " + replica.getId());
+        this.electionEpoch += 1;
         startElectionProtocol();
     }
 

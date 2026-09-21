@@ -127,8 +127,9 @@ public class UpdateManager {
             // myClients -> <ActorRef, Messages.NodeClock> -> NodeClock is null, will be
             // assigned by coordinator
             this.myClients.computeIfAbsent(_msg.client, k -> new HashSet<>());
-            
-            // if the message is a retry, delete old entry to avoid duplication in the future
+
+            // if the message is a retry, delete old entry to avoid duplication in the
+            // future
             if (_msg.id != null) {
                 pendingUpdateRequests.remove(_msg.id);
             }
@@ -307,6 +308,14 @@ public class UpdateManager {
         replica.toCommitQueue.clear();
         readyToCommit.clear();
         ackCounters.clear();
+
+        // discard update pending from the previous epoch since they will be 
+        // regenerated with a new clock if they failed before
+        updateClients.clear();
+        for (Set<Messages.NodeClock> pending : myClients.values()) {
+            pending.clear();
+        }
+        myClients.entrySet().removeIf(e -> e.getValue().isEmpty());
     }
 
     public void cancelTimers() {
