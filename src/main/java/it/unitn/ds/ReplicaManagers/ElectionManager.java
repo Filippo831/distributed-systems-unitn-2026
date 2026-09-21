@@ -171,8 +171,6 @@ public class ElectionManager {
                         " sender=" + replica.getSenderRef() +
                         " electionEpoch=" + _msg.electionEpoch +
                         " candidates=" + _msg.candidates.keySet());
-        // save election message
-        this.election = _msg;
 
         if (_msg.electionEpoch < this.electionEpoch) {
             replica.debugInfo(
@@ -196,8 +194,9 @@ public class ElectionManager {
             return;
         }
 
-        this.electionEpoch = _msg.electionEpoch;
-        this.electionStarterId = _msg.starterId;
+        // save election message
+        this.election = _msg;
+
 
         // if node still in NORMAL state, enter ELECTION state and handle election
         // message
@@ -205,6 +204,9 @@ public class ElectionManager {
             // go to election state
             enterElectionState();
         }
+
+        this.electionEpoch = _msg.electionEpoch;
+        this.electionStarterId = _msg.starterId;
 
         // ack sender
         replica.getSenderRef().tell(new Messages.ElectionAck(), replica.getSelfRef());
