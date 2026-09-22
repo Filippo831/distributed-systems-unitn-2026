@@ -1,6 +1,7 @@
 package it.unitn.ds;
 
 import java.io.Serializable;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -175,8 +176,8 @@ public class Messages {
             electionEpoch = _electionEpoch;
             nodeEndingEpoch = _nodeEndingEpoch;
 
-            //this.candidates = Collections.unmodifiableMap(new HashMap<>(candidates));
-            this.candidates = new HashMap<>(candidates);
+            this.candidates = Collections.unmodifiableMap(new HashMap<>(candidates));
+            //this.candidates = new HashMap<>(candidates);
         }
     }
 
@@ -193,8 +194,8 @@ public class Messages {
 
         public Synchronization(int newCoordId, Map<NodeClock, UpdateData> coordHistory) {
             this.newCoordId = newCoordId;
-            //this.coordHistory = Collections.unmodifiableMap(new TreeMap<>(coordHistory));
-            this.coordHistory =new TreeMap<>(coordHistory);
+            this.coordHistory = Collections.unmodifiableMap(new TreeMap<>(coordHistory));
+            //this.coordHistory =new TreeMap<>(coordHistory);
         }
     }
 
