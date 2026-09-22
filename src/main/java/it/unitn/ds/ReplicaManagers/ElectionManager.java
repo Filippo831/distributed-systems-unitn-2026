@@ -2,6 +2,7 @@ package it.unitn.ds.ReplicaManagers;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -130,7 +131,7 @@ public class ElectionManager {
         replica.cancelAllTimers();
 
         electionTimer = replica.createTimer(new Messages.ElectionTimeout(),
-                replica.timerDuration * replica.group.size());
+                replica.timerDuration * replica.group.size() );
     }
 
     // entry point for the timeout handlers: switch to election state and start the
@@ -146,11 +147,11 @@ public class ElectionManager {
         // reset election message and coordinator id
         // this.electionEpoch += 1; removed as fail-and-retry will increase it but we do no0t want that
         this.electionStarterId = replica.getId();
-        this.election = new Messages.Election(replica.getId(), this.electionEpoch, replica.epoch);
+        this.election = new Messages.Election(replica.getId(), this.electionEpoch, replica.epoch, new HashMap<>());
         replica.coordinatorId = -1;
 
         // append node id and last seen message
-        addOwnCandidate(election);
+        this.election = addOwnCandidate(election);
 
         // forward message to next node in the ring
         nextNodeId = getNextNodeId();
@@ -193,7 +194,7 @@ public class ElectionManager {
         }
         // check if teh election message epoch is equal but the starter id is lower than
         // the current one, if so, ignore it
-        else if (_msg.electionEpoch == this.electionEpoch && _msg.starterId < this.electionStarterId) {
+        else if (_msg.electionEpoch == this.electionEpoch && _msg.starterId > this.electionStarterId) {
             replica.debugInfo(
                     "Replica " + replica.getId() +
                             " ignoring election message with equal epoch " + _msg.electionEpoch +
@@ -228,14 +229,14 @@ public class ElectionManager {
         if (!_msg.candidates.containsKey(replica.getId())) {
             // add own data to the election message -> append node id and last seen message
             // (if all messages have been commited, take it from the commit history)
-            addOwnCandidate(_msg);
+            this.election = addOwnCandidate(_msg);
 
             // get next node in the ring
             nextNodeId = getNextNodeId();
 
             // forward message to next node in the ring
             ActorRef nextNode = replica.group.get(nextNodeId);
-            nextNode.tell(_msg, replica.getSelfRef());
+            nextNode.tell(this.election, replica.getSelfRef());
 
             replica.debugInfo(
                     "Replica " + replica.getId() +
@@ -265,18 +266,26 @@ public class ElectionManager {
     }
 
     // append this node's id and last seen message clock to the election candidates
-    private void addOwnCandidate(Messages.Election _msg) {
+    private Messages.Election addOwnCandidate(Messages.Election _msg) {
+        Map<Integer, Messages.NodeClock> candidates = new HashMap<>(_msg.candidates);
+
         if (!replica.toCommitQueue.isEmpty()) {
-            _msg.candidates.put(replica.getId(), replica.toCommitQueue.lastKey()); // toCommitQueue is a tree map, so is
+            candidates.put(replica.getId(), replica.toCommitQueue.lastKey()); // toCommitQueue is a tree map, so is
                                                                                    // ordered by
             // NodeClock, get latest
         } else if (!replica.commitHistory.isEmpty()) {
-            _msg.candidates.put(replica.getId(), replica.commitHistory.lastKey());
+            candidates.put(replica.getId(), replica.commitHistory.lastKey());
         } else {
-            _msg.candidates.put(replica.getId(), new Messages.NodeClock(0, 0)); // if no updates have been made yet, use
-                                                                                // default
+            candidates.put(replica.getId(), new Messages.NodeClock(0, 0)); // if no updates have been made yet, use                                                                  // default
             // clock
         }
+
+        return new Messages.Election(
+            _msg.starterId,
+            _msg.electionEpoch,
+            _msg.nodeEndingEpoch,
+            candidates
+    );
     }
 
     public void handleElectionAck(Messages.ElectionAck _msg) throws Exception {

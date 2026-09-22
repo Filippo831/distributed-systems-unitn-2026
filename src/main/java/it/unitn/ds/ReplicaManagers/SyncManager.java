@@ -59,8 +59,6 @@ public class SyncManager {
     private void finishSynchronization() throws Exception {
         // prepare synchronization message with the id of the new coordinator and the up
         // to date message history
-        Messages.Synchronization synchMsg = new Messages.Synchronization();
-        synchMsg.newCoordId = replica.getId();
 
         replica.coordinatorId = replica.getId();
         replica.onCoordinatorElected(replica.coordinatorId);
@@ -71,7 +69,7 @@ public class SyncManager {
         completeHistory.putAll(replica.toCommitQueue);
 
         // complete history contains commited and still uncommitted updates
-        synchMsg.coordHistory = completeHistory;
+        Messages.Synchronization synchMsg = new Messages.Synchronization(replica.getId(), completeHistory);
 
         // the new coordinator can start new epoch an reset the sequence number
         replica.epoch++;

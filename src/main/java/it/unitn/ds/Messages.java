@@ -4,6 +4,7 @@ import java.io.Serializable;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 
 import akka.actor.ActorRef;
 
@@ -163,16 +164,19 @@ public class Messages {
     public static class Election {
         // this will contain a map of node id and node clock, where node clock
         // represents last message seen by that node
-        public final Map<Integer, Messages.NodeClock> candidates = new HashMap<>();
+        public final Map<Integer, Messages.NodeClock> candidates;
         // id of the node that started this election
-        public int starterId;
-        public int electionEpoch;
-        public int nodeEndingEpoch;
+        public final int starterId;
+        public final int electionEpoch;
+        public final int nodeEndingEpoch;
 
-        public Election(int _starterId, int _electionEpoch, int _nodeEndingEpoch) {
+        public Election(int _starterId, int _electionEpoch, int _nodeEndingEpoch, Map<Integer, NodeClock> candidates) {
             starterId = _starterId;
             electionEpoch = _electionEpoch;
             nodeEndingEpoch = _nodeEndingEpoch;
+
+            //this.candidates = Collections.unmodifiableMap(new HashMap<>(candidates));
+            this.candidates = new HashMap<>(candidates);
         }
     }
 
@@ -182,10 +186,16 @@ public class Messages {
 
     public static class Synchronization implements Serializable {
         // new coordinator id
-        public int newCoordId;
+        public final int newCoordId;
         // this message will contain the coordinator history used by the nodes to get up
         // to date before starting the new epoch
-        public Map<Messages.NodeClock, Messages.UpdateData> coordHistory;
+        public final Map<Messages.NodeClock, Messages.UpdateData> coordHistory;
+
+        public Synchronization(int newCoordId, Map<NodeClock, UpdateData> coordHistory) {
+            this.newCoordId = newCoordId;
+            //this.coordHistory = Collections.unmodifiableMap(new TreeMap<>(coordHistory));
+            this.coordHistory =new TreeMap<>(coordHistory);
+        }
     }
 
     // public static class UpdateSyncRequest {
