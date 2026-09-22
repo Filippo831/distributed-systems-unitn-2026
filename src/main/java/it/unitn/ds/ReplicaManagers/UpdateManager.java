@@ -291,7 +291,7 @@ public class UpdateManager {
                     pendingUpdateRequest.index,
                     pendingUpdateRequest.value,
                     pendingUpdateRequest.client,
-                    pendingUpdateRequest.fromReplica,
+                    false,
                     entry.getKey());
 
             try {
