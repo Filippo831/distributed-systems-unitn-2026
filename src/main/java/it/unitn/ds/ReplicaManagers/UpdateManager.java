@@ -285,13 +285,18 @@ public class UpdateManager {
         replica.debugInfo(
                 "Replica " + replica.getId() +
                         " resend pending = " + pendingUpdateRequests.size());
+
+        // isCoord tells us if the node is the coordinator or another replica
+        boolean isCoord = (replica.getId() == replica.coordinatorId);
+
+        // the UpdateRequest must be constructed differently based on whether the replica is coordinator or not
         for (Map.Entry<String, Messages.UpdateRequest> entry : new HashMap<>(pendingUpdateRequests).entrySet()) {
             Messages.UpdateRequest pendingUpdateRequest = entry.getValue();
             Messages.UpdateRequest retry = new Messages.UpdateRequest(
                     pendingUpdateRequest.index,
                     pendingUpdateRequest.value,
                     pendingUpdateRequest.client,
-                    false,
+                    !isCoord, // if node isCoord (true), fromReplica is false (!isCoord)
                     entry.getKey());
 
             try {
