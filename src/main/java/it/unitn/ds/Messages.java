@@ -23,8 +23,8 @@ public class Messages {
     }
 
     public static class NodeClock implements Comparable<NodeClock> {
-        public int epoch;
-        public int seqNum;
+        public final int epoch;
+        public final int seqNum;
 
         public NodeClock(int _epoch, int _seqNum) {
             epoch = _epoch;
@@ -61,16 +61,6 @@ public class Messages {
         @Override
         public int hashCode() {
             return Objects.hash(epoch, seqNum);
-        }
-
-        public void incrementSeqNum() {
-            this.seqNum++;
-        }
-
-        public void incrementEpoch() {
-            // when changing epoch, reset the seqNum to 0
-            this.epoch++;
-            this.seqNum = 0;
         }
     }
 
@@ -143,7 +133,7 @@ public class Messages {
 
     // TODO: check if the sender id is needed to avoid duplicates
     public static class Ack implements Serializable {
-        public NodeClock clock;
+        public final NodeClock clock;
 
         public Ack(NodeClock _clock) {
             clock = _clock;
@@ -151,7 +141,7 @@ public class Messages {
     }
 
     public static class WriteOk implements Serializable {
-        public NodeClock clock;
+        public final NodeClock clock;
 
         public WriteOk(NodeClock _clock) {
             clock = _clock;
@@ -198,23 +188,6 @@ public class Messages {
             //this.coordHistory =new TreeMap<>(coordHistory);
         }
     }
-
-    // public static class UpdateSyncRequest {
-    // }
-
-    // public static class UpdateSyncResponse {
-    //     public Map<Messages.NodeClock, Messages.UpdateData> updateHistory;
-    //     int id;
-
-    //     public UpdateSyncResponse(int _id, Map<Messages.NodeClock, Messages.UpdateData> _updateHistory) {
-    //         this.id = _id;
-    //         this.updateHistory = _updateHistory;
-    //     }
-
-    //     public int getId() {
-    //         return id;
-    //     }
-    // }
 
     // Create empty classes to handle timeouts
     // REPLICA timeouts
