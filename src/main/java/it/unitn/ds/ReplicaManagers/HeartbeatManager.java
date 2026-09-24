@@ -6,6 +6,7 @@ import akka.actor.Cancellable;
 import it.unitn.ds.Messages;
 import it.unitn.ds.Replica;
 import scala.concurrent.duration.Duration;
+import it.unitn.ds.AbstractReplica.Crash;
 
 /**
  * Manages the coordinator heartbeat: the coordinator periodically broadcasts
@@ -59,6 +60,14 @@ public class HeartbeatManager {
             // when other nodes receive a heartbeat from the coordinator they can reset the
             // timer
             resetTimeout();
+        }
+        if (replica.pendingCrash != null && replica.pendingCrash.type == Crash.Type.Heartbeat) {
+            replica.n_messages_of_type++;
+            if (replica.n_messages_of_type >= replica.pendingCrash.after_n_messages_of_type) {
+                replica.n_messages_of_type = 0;
+                replica.getContext().become(replica.createCrashedReceive());
+                return;
+            }
         }
     }
 

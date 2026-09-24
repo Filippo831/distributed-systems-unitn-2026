@@ -41,6 +41,10 @@ public class Replica extends AbstractReplica {
     public Set<Integer> crashedReplicas = new HashSet<>();
 
     public final int timerDuration = getMaxLatency() * 2 + getMinLatency();
+    
+    // keep track if there is a crash requested
+    public Crash pendingCrash = null;
+    public int n_messages_of_type = 0;
 
     // =================================================================================
     // Managers
@@ -193,12 +197,16 @@ public class Replica extends AbstractReplica {
 
     @Override
     public void crash(AbstractReplica.Crash how_to_crash) {
-        // change state: NORMAL/ELECTION -> CRASH
-        // this is done by changing the node behaviour using the "message filter"
-        // defined in createCrashedReceive
-        // this way it stops handling messages
-        getContext().become(createCrashedReceive());
-
+        if (how_to_crash.type == Crash.Type.Now) {
+            // change state: NORMAL/ELECTION -> CRASH
+            // this is done by changing the node behaviour using the "message filter"
+            // defined in createCrashedReceive
+            // this way it stops handling messages
+            getContext().become(createCrashedReceive());
+            return;
+        } 
+        this.pendingCrash = how_to_crash;
+        this.n_messages_of_type = 0;
     }
 
     @Override
@@ -242,7 +250,6 @@ public class Replica extends AbstractReplica {
                 .match(Messages.UpdateTimeout.class, this::handleUpdateTimeout)
                 .match(Messages.WriteOkTimeout.class, this::handleWriteOkTimeout)
                 .match(Messages.ReadRequest.class, this::handleReadRequest)
-                .match(Messages.StateInfoRequest.class, this::handleStateInfoRequest)
                 .build();
     }
 
@@ -292,20 +299,6 @@ public class Replica extends AbstractReplica {
         electionManager.startElection();
     }
 
-    // Handler for testing
-    private final void handleStateInfoRequest(Messages.StateInfoRequest _msg) {
-        Messages.NodeClock latest = (seqNum > 0) ? new Messages.NodeClock(epoch, seqNum) : null;
-        getSenderRef().tell(new Messages.StateInfoResponse(
-                id, coordinatorId, epoch, seqNum,
-                commitHistory.size(), toCommitQueue.size(),
-                updateManager().ackCountersSize(),
-                latest == null ? -1 : updateManager().ackCountOf(latest),
-                latest != null && updateManager().ackQuorumReached(latest),
-                updateManager().writeOkTimersSize(),
-                updateManager().updateTimersSize(),
-                updateManager().pendingUpdateRequestsSize()),
-                getSelfRef());
-    }
 
     // =================================================================================
     // Public delegators preserved for external/test API

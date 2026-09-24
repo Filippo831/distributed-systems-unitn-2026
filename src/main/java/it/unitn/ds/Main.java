@@ -5,10 +5,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
 
 import com.typesafe.config.Config;
@@ -28,7 +25,6 @@ import it.unitn.ds.AbstractReplica.Crash;
 import it.unitn.ds.AbstractReplica.ElectionStarted;
 import it.unitn.ds.AbstractReplica.InitSystem;
 import it.unitn.ds.AbstractReplica.UpdateApplied;
-import it.unitn.ds.Messages.StateInfoRequest;
 
 /**
  * Runtime stress/demo test for the replica system.
@@ -137,31 +133,6 @@ public class Main {
         }
     }
 
-    /**
-     * Lightweight destination for repeated StateInfoRequest probes. Fast enough to
-     * observe a replica's state while it is in the middle of a 2PC (much cheaper
-     * than Patterns.ask, which spins up a helper actor on every call).
-     */
-    private static final class StateProbe extends AbstractActor {
-        private final BlockingQueue<Messages.StateInfoResponse> queue;
-
-        StateProbe(BlockingQueue<Messages.StateInfoResponse> queue) {
-            this.queue = queue;
-        }
-
-        static Props props(BlockingQueue<Messages.StateInfoResponse> queue) {
-            return Props.create(StateProbe.class, () -> new StateProbe(queue));
-        }
-
-        @Override
-        public Receive createReceive() {
-            return receiveBuilder()
-                    .match(Messages.StateInfoResponse.class, queue::add)
-                    .matchAny(o -> { })
-                    .build();
-        }
-    }
-
     // =====================================================================
     // Helpers
     // =====================================================================
@@ -211,17 +182,6 @@ public class Main {
         ActorRef listener = sys.actorOf(Listener.props(report), name + "_listener");
         return sys.actorOf(Client.propsWithListener(to.read, to.write,
                 Optional.ofNullable(target), listener), name);
-    }
-
-    private static ActorRef newStateProbe(ActorSystem sys, BlockingQueue<Messages.StateInfoResponse> queue) {
-        return sys.actorOf(StateProbe.props(queue), "stateProbe");
-    }
-
-    /** Sends one StateInfoRequest and returns the response, or null on timeout. */
-    private static Messages.StateInfoResponse state(ActorRef replica, ActorRef probe,
-            BlockingQueue<Messages.StateInfoResponse> queue) throws InterruptedException {
-        replica.tell(new Messages.StateInfoRequest(), probe);
-        return queue.poll(1000, TimeUnit.MILLISECONDS);
     }
 
     private static Timeouts timeouts(int n) {
@@ -353,37 +313,17 @@ public class Main {
         Timeouts to = timeouts(N);
         Thread.sleep(600);
 
-        // Widen the 2PC window (same technique as the JUnit tests): flood the
-        // followers that are neither coordinator nor target so their Acks arrive
-        // late. In real life this is a latency spike / overloaded replica.
-        for (int i = 1; i < N; i++) {
-            if (i == COORD || i == TARGET) {
-                continue;
-            }
-            for (int j = 0; j < 150; j++) {
-                replicas.get(i).tell(new StateInfoRequest(), ActorRef.noSender());
-            }
-        }
-
         ActorRef client = createClient(sys, r, "client", to, replicas.get(TARGET));
+
+        // Schedule the target's crash: it dies as soon as it processes the first
+        // Update of the 2PC — i.e. right after it forwarded the write to the
+        // coordinator and acked it, but before any WriteOk can reach it (the
+        // Update→WriteOk channel is FIFO). It can therefore never commit the
+        // write nor notify the client.
+        replicas.get(TARGET).tell(new Crash(Crash.Type.Update, 1), ActorRef.noSender());
+
         int m = r.size();
         client.tell(new WriteRequest(0, 200), ActorRef.noSender());
-
-        // Catch replica 6 right after it forwarded the write to the coordinator
-        // but before the 2PC concluded, then pull the plug on it.
-        BlockingQueue<Messages.StateInfoResponse> queue = new LinkedBlockingQueue<>();
-        ActorRef probe = newStateProbe(sys, queue);
-        long deadline = System.currentTimeMillis() + maxUpdateDelay(N);
-        boolean caught = false;
-        while (System.currentTimeMillis() < deadline) {
-            Messages.StateInfoResponse s = state(replicas.get(TARGET), probe, queue);
-            if (s != null && (s.pendingUpdateRequestsSize >= 1 || s.writeOkTimersSize >= 1)) {
-                caught = true;
-                break;
-            }
-        }
-        r.note("target replica caught mid-write (forwarded, not yet committed): " + caught);
-        replicas.get(TARGET).tell(new Crash(Crash.Type.Now, 0), ActorRef.noSender());
 
         // The remaining replicas + coordinator still form a quorum → the write commits.
         r.check("write still commits even though the client's replica died mid-write",
@@ -405,7 +345,7 @@ public class Main {
         return r;
     }
 
-    /** 3 — Coordinator dies mid-2PC while followers are slow/congested. */
+    /** 3 — Coordinator dies mid-2PC (right after the Update broadcast). */
     private static Report scenario3CoordinatorDiesMid2PC() throws Exception {
         final int N = 7, COORD = 0, TARGET = N - 1;
         Report r = new Report();
@@ -414,32 +354,15 @@ public class Main {
         Timeouts to = timeouts(N);
         Thread.sleep(600);
 
-        // Simulate congestion / overloaded followers: flood their mailboxes so their
-        // Acks arrive late and the 2PC window is wide enough to observe.
-        for (int i = 1; i < N; i++) {
-            for (int j = 0; j < 150; j++) {
-                replicas.get(i).tell(new StateInfoRequest(), ActorRef.noSender());
-            }
-        }
-
         ActorRef client = createClient(sys, r, "client", to, replicas.get(TARGET));
+
+        // Schedule the coordinator's crash: it dies as soon as it processes the
+        // first Ack of the 2PC — the Update broadcast is done but the quorum is
+        // not reached yet, i.e. exactly "mid-2PC".
+        replicas.get(COORD).tell(new Crash(Crash.Type.WriteOK, 1), ActorRef.noSender());
+
         int m = r.size();
         client.tell(new WriteRequest(0, 300), ActorRef.noSender());
-
-        // Kill the coordinator while it is broadcasting Updates and collecting Acks.
-        BlockingQueue<Messages.StateInfoResponse> queue = new LinkedBlockingQueue<>();
-        ActorRef probe = newStateProbe(sys, queue);
-        long deadline = System.currentTimeMillis() + maxUpdateDelay(N);
-        boolean caught = false;
-        while (System.currentTimeMillis() < deadline) {
-            Messages.StateInfoResponse s = state(replicas.get(COORD), probe, queue);
-            if (s != null && s.seqNum >= 1 && s.ackCountersSize >= 1) {
-                caught = true;
-                break;
-            }
-        }
-        r.note("coordinator caught mid-2PC (Update broadcast + pending acks): " + caught);
-        replicas.get(COORD).tell(new Crash(Crash.Type.Now, 0), ActorRef.noSender());
 
         // Failover must happen.
         m = r.size();
@@ -479,12 +402,15 @@ public class Main {
         Thread.sleep(600);
 
         replicas.get(COORD).tell(new Crash(Crash.Type.Now, 0), ActorRef.noSender());
+
+        // A second replica dies the moment the ring election message reaches it:
+        // the crash fires inside handleElection, right after the message is
+        // processed, so it goes down while the ring is still circulating.
+        replicas.get(DIES_DURING_ELECTION).tell(new Crash(Crash.Type.Election, 1), ActorRef.noSender());
+
         int m = r.size();
         r.check("election starts after the coordinator crash",
                 await(r, m, electionMaxDelay(N), "ELECTION_STARTED", e -> true));
-
-        // A second replica dies while the ring election is in progress.
-        replicas.get(DIES_DURING_ELECTION).tell(new Crash(Crash.Type.Now, 0), ActorRef.noSender());
 
         // The election must still converge on a survivor.
         m = r.size();
@@ -641,7 +567,7 @@ public class Main {
         banner("SCENARIO 2 — the client's replica dies in the middle of a write");
         reports.add(scenario2TargetReplicaDiesMidWrite());
 
-        banner("SCENARIO 3 — coordinator dies mid-2PC (slow/congested replicas)");
+        banner("SCENARIO 3 — coordinator dies mid-2PC (right after the Update broadcast)");
         reports.add(scenario3CoordinatorDiesMid2PC());
 
         banner("SCENARIO 4 — a second replica dies while the election is running");

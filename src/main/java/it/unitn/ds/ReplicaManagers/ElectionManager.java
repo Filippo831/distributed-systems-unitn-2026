@@ -11,6 +11,8 @@ import akka.actor.Cancellable;
 import it.unitn.ds.Messages;
 import it.unitn.ds.Replica;
 
+import it.unitn.ds.AbstractReplica.Crash;
+
 /**
  * Handles the ring-based election protocol: election messages, state switching
  * (NORMAL -> ELECTION), the election/ack timers and the ring traversal.
@@ -262,7 +264,16 @@ public class ElectionManager {
                 // create a timer
                 electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.timerDuration);
             }
-         }
+        }
+
+        if (replica.pendingCrash != null && replica.pendingCrash.type == Crash.Type.Election) {
+            replica.n_messages_of_type++;
+            if (replica.n_messages_of_type >= replica.pendingCrash.after_n_messages_of_type) {
+                replica.n_messages_of_type = 0;
+                replica.getContext().become(replica.createCrashedReceive());
+                return;
+            }
+        }
     }
 
     // append this node's id and last seen message clock to the election candidates

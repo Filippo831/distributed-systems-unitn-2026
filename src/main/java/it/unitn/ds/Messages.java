@@ -205,44 +205,5 @@ public class Messages {
 
     public static class ElectionAckTimeout {
     }
-
-    // public static class UpdateSyncTimeout {
-    // }
-
-    // MESSAGES FOR TESTING
-    public static class StateInfoRequest implements Serializable {
-    }
-
-    public static class StateInfoResponse implements Serializable {
-        public final int replicaId;
-        public final int coordinatorId;
-        public final int epoch;
-        public final int seqNum;
-        public final int commitHistorySize;
-        public final int toCommitQueueSize;
-        public final int ackCountersSize;
-        public final int latestAckCount;
-        public final boolean ackQuorumReached;
-        public final int writeOkTimersSize;
-        public final int updateTimersSize;
-        public final int pendingUpdateRequestsSize;
-
-        // full constructor assigning all final fields
-        public StateInfoResponse(int _replicaId, int _coordinatorId, int _epoch, int _seqNum, int _commitHistorySize,
-                int _toCommitQueueSize, int _ackCountersSize, int _latestAckCount, boolean _ackQuorumReached,
-                int _writeOkTimersSize, int _updateTimersSize, int _pendingUpdateRequestsSize) {
-            replicaId = _replicaId;
-            coordinatorId = _coordinatorId;
-            epoch = _epoch;
-            seqNum = _seqNum;
-            commitHistorySize = _commitHistorySize;
-            toCommitQueueSize = _toCommitQueueSize;
-            ackCountersSize = _ackCountersSize;
-            latestAckCount = _latestAckCount;
-            ackQuorumReached = _ackQuorumReached;
-            writeOkTimersSize = _writeOkTimersSize;
-            updateTimersSize = _updateTimersSize;
-            pendingUpdateRequestsSize = _pendingUpdateRequestsSize;
-        }
-    }
 }
+

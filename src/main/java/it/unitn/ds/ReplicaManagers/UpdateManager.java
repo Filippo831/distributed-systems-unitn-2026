@@ -14,6 +14,7 @@ import akka.actor.Cancellable;
 import it.unitn.ds.AbstractClient;
 import it.unitn.ds.Messages;
 import it.unitn.ds.Replica;
+import it.unitn.ds.AbstractReplica.Crash;
 
 /**
  * Handles the write protocol: UpdateRequest (coordinator + replica branches),
@@ -186,6 +187,14 @@ public class UpdateManager {
         Cancellable newTimer = replica.createTimer(new Messages.WriteOkTimeout(), replica.timerDuration);
 
         writeOkTimers.put(_msg.clock, newTimer);
+        if (replica.pendingCrash != null && replica.pendingCrash.type == Crash.Type.Update) {
+            replica.n_messages_of_type++;
+            if (replica.n_messages_of_type >= replica.pendingCrash.after_n_messages_of_type) {
+                replica.n_messages_of_type = 0;
+                replica.getContext().become(replica.createCrashedReceive());
+                return;
+            }
+        }
     }
 
     // coordinator: count Acks and commit in order once the quorum is reached
@@ -223,6 +232,15 @@ public class UpdateManager {
 
                     this.ackCounters.remove(clockToCommit);
                 }
+            }
+        }
+
+        if (replica.pendingCrash != null && replica.pendingCrash.type == Crash.Type.WriteOK) {
+            replica.n_messages_of_type++;
+            if (replica.n_messages_of_type >= replica.pendingCrash.after_n_messages_of_type) {
+                replica.n_messages_of_type = 0;
+                replica.getContext().become(replica.createCrashedReceive());
+                return;
             }
         }
     }
