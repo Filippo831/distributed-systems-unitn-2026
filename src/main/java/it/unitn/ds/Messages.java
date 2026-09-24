@@ -100,18 +100,18 @@ public class Messages {
 
     }
 
-    public static class ReadResponse implements Serializable {
-        public final int index;
-        public final int value;
+    // public static class ReadResponse implements Serializable {
+    //     public final int index;
+    //     public final int value;
 
-        public final int sender;
+    //     public final int sender;
 
-        public ReadResponse(int _index, int _value, int _sender) {
-            index = _index;
-            value = _value;
-            sender = _sender;
-        }
-    }
+    //     public ReadResponse(int _index, int _value, int _sender) {
+    //         index = _index;
+    //         value = _value;
+    //         sender = _sender;
+    //     }
+    // }
 
     public static class Update implements Serializable {
         public final int index;
