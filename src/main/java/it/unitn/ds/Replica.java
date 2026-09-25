@@ -40,7 +40,7 @@ public class Replica extends AbstractReplica {
     // replicas that are known to have crashed
     public Set<Integer> crashedReplicas = new HashSet<>();
 
-    public final int timerDuration = getMaxLatency() * 2 + getMinLatency();
+    public int timerDuration;
     
     // keep track if there is a crash requested
     public Crash pendingCrash = null;
@@ -157,7 +157,7 @@ public class Replica extends AbstractReplica {
     public final void broadcast(Object message) {
         for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
             if (entry.getKey() != this.id) {
-                entry.getValue().tell(message, getSelf());
+                sendTo((java.io.Serializable) message, entry.getValue());
             }
         }
     }
@@ -213,6 +213,7 @@ public class Replica extends AbstractReplica {
     public void initSystem(InitSystem sysInit) {
         this.group = sysInit.group;
         this.coordinatorId = sysInit.coordinator_id;
+        this.timerDuration = getMaxLatencyPlusTolerance();
         if (this.id == this.coordinatorId) {
             // if this node is the coordinator, start sending heartbeat messages to the
             // other nodes

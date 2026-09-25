@@ -146,7 +146,7 @@ public class UpdateManager {
             pendingUpdateRequests.put(requestId, forwardMsg);
 
             // send to coordinator
-            replica.group.get(replica.coordinatorId).tell(forwardMsg, replica.getSelfRef());
+            replica.sendTo((java.io.Serializable) forwardMsg, replica.group.get(replica.coordinatorId));
 
             // when the node sends UpdateRequest to the coordinator it starts waiting for
             // the Update message, so the updateTimer is started
@@ -180,7 +180,8 @@ public class UpdateManager {
         }
 
         // send ACK back to the coordinator
-        replica.group.get(replica.coordinatorId).tell(new Messages.Ack(_msg.clock), replica.getSelfRef());
+        // replica.group.get(replica.coordinatorId).tell(new Messages.Ack(_msg.clock), replica.getSelfRef());
+        replica.sendTo((java.io.Serializable) new Messages.Ack(_msg.clock), replica.group.get(replica.coordinatorId));
 
         // when the node sends ACK to the coordinator it starts waiting for the WriteOk
         // message, so the writeOkTimer is started

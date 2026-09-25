@@ -101,16 +101,16 @@ public class Messages {
     }
 
     // public static class ReadResponse implements Serializable {
-    //     public final int index;
-    //     public final int value;
+    // public final int index;
+    // public final int value;
 
-    //     public final int sender;
+    // public final int sender;
 
-    //     public ReadResponse(int _index, int _value, int _sender) {
-    //         index = _index;
-    //         value = _value;
-    //         sender = _sender;
-    //     }
+    // public ReadResponse(int _index, int _value, int _sender) {
+    // index = _index;
+    // value = _value;
+    // sender = _sender;
+    // }
     // }
 
     public static class Update implements Serializable {
@@ -152,7 +152,7 @@ public class Messages {
         // empty, just a signal to check if the node is alive
     }
 
-    public static class Election {
+    public static class Election implements Serializable {
         // this will contain a map of node id and node clock, where node clock
         // represents last message seen by that node
         public final Map<Integer, Messages.NodeClock> candidates;
@@ -167,7 +167,7 @@ public class Messages {
             nodeEndingEpoch = _nodeEndingEpoch;
 
             this.candidates = Collections.unmodifiableMap(new HashMap<>(candidates));
-            //this.candidates = new HashMap<>(candidates);
+            // this.candidates = new HashMap<>(candidates);
         }
     }
 
@@ -185,7 +185,7 @@ public class Messages {
         public Synchronization(int newCoordId, Map<NodeClock, UpdateData> coordHistory) {
             this.newCoordId = newCoordId;
             this.coordHistory = Collections.unmodifiableMap(new TreeMap<>(coordHistory));
-            //this.coordHistory =new TreeMap<>(coordHistory);
+            // this.coordHistory =new TreeMap<>(coordHistory);
         }
     }
 
@@ -206,4 +206,3 @@ public class Messages {
     public static class ElectionAckTimeout {
     }
 }
-

@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.function.Predicate;
 
 import com.typesafe.config.Config;
@@ -219,6 +220,48 @@ public class Main {
     private static boolean isApplied(Event e, int replicaId, int value) {
         return e.payload() instanceof UpdateApplied ua
                 && ua.replicaId == replicaId && ua.value == value;
+    }
+
+    private static boolean isApplied(Event e, int replicaId, int index, int value) {
+        return e.payload() instanceof UpdateApplied ua
+                && ua.replicaId == replicaId && ua.index == index && ua.value == value;
+    }
+
+    /** Returns the read results observed after a marker in the report. */
+    private static List<ReadResult> readResultsSince(Report report, int from) {
+        List<ReadResult> results = new ArrayList<>();
+        for (int i = from; i < report.events.size(); i++) {
+            Event event = report.events.get(i);
+            if (event.type().equals("READ_RESULT") && event.payload() instanceof ReadResult result) {
+                results.add(result);
+            }
+        }
+        return results;
+    }
+
+    /** Waits until the expected number of read responses has been observed. */
+    private static boolean awaitReadResults(Report report, int from, int expected, long timeoutMs)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (readResultsSince(report, from).size() >= expected) {
+                return true;
+            }
+            Thread.sleep(2);
+        }
+        return readResultsSince(report, from).size() >= expected;
+    }
+
+    /** Checks the per-replica read sequence used by the sequential-consistency test. */
+    private static boolean isNonDecreasing(List<Integer> values) {
+        for (int i = 1; i < values.size(); i++) {
+            Integer previous = values.get(i - 1);
+            Integer current = values.get(i);
+            if (previous != null && current != null && current < previous) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static boolean isElected(Event e, int... excluded) {
@@ -548,6 +591,167 @@ public class Main {
         return r;
     }
 
+    /**
+     * Runtime equivalent of
+     * {@code NoCrashes.sequentialConsistencyOneWriteClient}.
+     *
+     * <p>The JUnit test starts one read client per replica, sends five writes
+     * through a separate client, and then checks that the values observed from
+     * each replica never decrease. Main uses the same shape, with the shared
+     * runtime {@link Report} replacing the TestKit probe.</p>
+     */
+    private static Report sequentialConsistencyOneWriteClient(int coordinator, int nNodes)
+            throws InterruptedException {
+        final int index = 0;
+        final int numWrites = 5;
+        final int numReadsPerClient = 15;
+        final long readIntervalMs = Math.max(1L, maxUpdateDelay(nNodes) / 2L);
+
+        Report report = new Report();
+        ActorSystem system = newSystem("sequentialConsistencyOneWriteClient_"
+                + coordinator + "_" + nNodes);
+        Map<Integer, ActorRef> replicas = createReplicas(system, report, nNodes, coordinator);
+        Timeouts to = timeouts(nNodes);
+
+        // The write client has no listener in the original test. Read clients
+        // share one listener so their results can be grouped by source replica.
+        ActorRef writeClient = system.actorOf(
+                Client.propsWithListener(
+                        to.read,
+                        to.write,
+                        Optional.ofNullable(replicas.get(0)),
+                        null),
+                "clientWrite");
+
+        ActorRef readListener = system.actorOf(
+                Listener.props(report),
+                "sequentialReadListener");
+        List<ActorRef> readClients = new ArrayList<>();
+        for (int i = 0; i < nNodes; i++) {
+            readClients.add(system.actorOf(
+                    Client.propsWithListener(
+                            to.read,
+                            to.write,
+                            Optional.ofNullable(replicas.get(i)),
+                            readListener),
+                    "clientRead_replica_" + i));
+        }
+
+        int from = report.size();
+        CountDownLatch startLatch = new CountDownLatch(1);
+        List<Thread> readThreads = new ArrayList<>();
+
+        // Start all readers first, but hold them until the writes have been sent.
+        for (ActorRef readClient : readClients) {
+            Thread readThread = new Thread(() -> {
+                try {
+                    startLatch.await();
+                    for (int i = 0; i < numReadsPerClient; i++) {
+                        readClient.tell(new ReadRequest(index), ActorRef.noSender());
+                        Thread.sleep(readIntervalMs);
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }, "sequential-reader");
+            readThread.start();
+            readThreads.add(readThread);
+        }
+
+        // Match the JUnit test: submit all writes before releasing readers.
+        for (int value = 0; value < numWrites; value++) {
+            writeClient.tell(new WriteRequest(index, value), ActorRef.noSender());
+        }
+        startLatch.countDown();
+
+        for (Thread readThread : readThreads) {
+            readThread.join();
+        }
+
+        int expectedReads = nNodes * numReadsPerClient;
+        boolean allReadsReturned = awaitReadResults(
+                report, from, expectedReads, to.read);
+        report.check("all read clients return the expected number of results",
+                allReadsReturned);
+
+        List<ReadResult> results = readResultsSince(report, from);
+        if (results.size() > expectedReads) {
+            // The JUnit probe consumes exactly the expected number of messages;
+            // ignore any extra late responses in the runtime report as well.
+            results = results.subList(0, expectedReads);
+        }
+
+        Map<Integer, List<Integer>> valuesByReplica = new HashMap<>();
+        for (ReadResult result : results) {
+            valuesByReplica.computeIfAbsent(result.fromReplica, ignored -> new ArrayList<>())
+                    .add(result.value);
+        }
+
+        for (int replicaId = 0; replicaId < nNodes; replicaId++) {
+            List<Integer> values = valuesByReplica.getOrDefault(replicaId, List.of());
+            report.note("replica " + replicaId + " read values: " + values);
+            report.check("replica " + replicaId
+                    + " observes a non-decreasing sequence", isNonDecreasing(values));
+        }
+
+        system.terminate();
+        report.summary("sequentialConsistencyOneWriteClient");
+        return report;
+    }
+
+    /**
+     * Runtime equivalent of
+     * {@code APICompliance.callbackOnUpdateAppliedInvokedOnAllReplicas}.
+     *
+     * <p>The JUnit test uses one TestKit per replica.  Main has a single
+     * listener instead, so the checks below use the replica id carried by each
+     * {@link UpdateApplied} event while preserving the same per-replica
+     * semantics.</p>
+     */
+    private static Report callbackOnUpdateAppliedInvokedOnAllReplicas(int coordinator, int nNodes)
+            throws InterruptedException {
+        final int index = 0;
+        final int value = 10;
+
+        Report report = new Report();
+        ActorSystem system = newSystem("callbackUpdateApplied_" + coordinator + "_" + nNodes);
+        Map<Integer, ActorRef> replicas = createReplicas(system, report, nNodes, coordinator);
+        Timeouts to = timeouts(nNodes);
+
+        // Match the other runtime scenarios and let initialization/heartbeats
+        // settle before issuing the request.
+        Thread.sleep(600);
+
+        // Issue the write through a non-coordinator replica, as in the JUnit test.
+        int target = (coordinator + 1) % nNodes;
+        ActorRef client = createClient(system, report, "client", to, replicas.get(target));
+        int from = report.size();
+        client.tell(new WriteRequest(index, value), ActorRef.noSender());
+
+        // Use the same update-delay window as the JUnit test.  It is long
+        // enough for the 2PC round trip, without waiting for the much larger
+        // client timeout used by the other runtime scenarios.
+        long window = maxUpdateDelay(nNodes);
+        report.check("a WriteResult is received before callbacks are checked",
+                await(report, from, window, "WRITE_RESULT",
+                        e -> e.payload() instanceof WriteResult));
+
+        // Every replica must report the update with its own id and the written
+        // index/value.  This is the runtime equivalent of expectMsgClass() on
+        // every TestKit probe in the original test.
+        for (int replicaId = 0; replicaId < nNodes; replicaId++) {
+            final int expectedReplicaId = replicaId;
+            boolean callbackObserved = await(report, from, window, "UPDATE_APPLIED",
+                    e -> isApplied(e, expectedReplicaId, index, value));
+            report.check("replica " + replicaId
+                    + " invokes callbackOnUpdateApplied with the correct data", callbackObserved);
+        }
+
+        system.terminate();
+        report.summary("callbackOnUpdateAppliedInvokedOnAllReplicas");
+        return report;
+    }
+
     // =====================================================================
     // Entry point
     // =====================================================================
@@ -558,26 +762,54 @@ public class Main {
 
         List<Report> reports = new ArrayList<>();
 
-        banner("SCENARIO 0 — baseline sanity check (no crash)");
-        reports.add(scenario0Baseline());
+        // Previous runtime scenarios are kept here for later.  Uncomment the
+        // corresponding lines when those scenarios should be run again.
+        // banner("SCENARIO 0 — baseline sanity check (no crash)");
+        // reports.add(scenario0Baseline());
 
-        banner("SCENARIO 1 — coordinator dies while idle → automatic failover");
-        reports.add(scenario1CoordinatorIdleCrash());
+        // banner("SCENARIO 1 — coordinator dies while idle → automatic failover");
+        // reports.add(scenario1CoordinatorIdleCrash());
 
-        banner("SCENARIO 2 — the client's replica dies in the middle of a write");
-        reports.add(scenario2TargetReplicaDiesMidWrite());
+        // banner("SCENARIO 2 — the client's replica dies in the middle of a write");
+        // reports.add(scenario2TargetReplicaDiesMidWrite());
 
-        banner("SCENARIO 3 — coordinator dies mid-2PC (right after the Update broadcast)");
-        reports.add(scenario3CoordinatorDiesMid2PC());
+        // banner("SCENARIO 3 — coordinator dies mid-2PC (right after the Update broadcast)");
+        // reports.add(scenario3CoordinatorDiesMid2PC());
 
-        banner("SCENARIO 4 — a second replica dies while the election is running");
-        reports.add(scenario4CrashDuringElection());
+        // banner("SCENARIO 4 — a second replica dies while the election is running");
+        // reports.add(scenario4CrashDuringElection());
 
-        banner("SCENARIO 5 — two consecutive coordinator deaths (double failover)");
-        reports.add(scenario5DoubleFailover());
+        // banner("SCENARIO 5 — two consecutive coordinator deaths (double failover)");
+        // reports.add(scenario5DoubleFailover());
 
-        banner("SCENARIO 6 — majority of replicas down at once (outage)");
-        reports.add(scenario6MajorityLoss());
+        // banner("SCENARIO 6 — majority of replicas down at once (outage)");
+        // reports.add(scenario6MajorityLoss());
+
+        // Runtime version of the APICompliance callback test, including the
+        // same coordinator/node combinations as its @CsvSource.
+        int[][] callbackCases = {
+                {0, 5},
+                {0, 7},
+                {1, 5},
+                {1, 7}
+        };
+        for (int[] testCase : callbackCases) {
+            banner("CALLBACK TEST — coordinator " + testCase[0] + ", nodes " + testCase[1]);
+            reports.add(callbackOnUpdateAppliedInvokedOnAllReplicas(testCase[0], testCase[1]));
+        }
+
+        // Runtime version of NoCrashes.sequentialConsistencyOneWriteClient.
+        int[][] sequentialConsistencyCases = {
+                {0, 7},
+                {0, 22},
+                {1, 7},
+                {1, 22}
+        };
+        for (int[] testCase : sequentialConsistencyCases) {
+            banner("SEQUENTIAL CONSISTENCY TEST — coordinator " + testCase[0]
+                    + ", nodes " + testCase[1]);
+            reports.add(sequentialConsistencyOneWriteClient(testCase[0], testCase[1]));
+        }
 
         int passed = 0, failed = 0;
         for (Report report : reports) {

@@ -133,7 +133,7 @@ public class ElectionManager {
         replica.cancelAllTimers();
 
         electionTimer = replica.createTimer(new Messages.ElectionTimeout(),
-                replica.timerDuration * replica.group.size() );
+                replica.timerDuration * replica.group.size() * 2);
     }
 
     // entry point for the timeout handlers: switch to election state and start the
@@ -147,7 +147,8 @@ public class ElectionManager {
 
     public void startElectionProtocol() {
         // reset election message and coordinator id
-        // this.electionEpoch += 1; removed as fail-and-retry will increase it but we do no0t want that
+        // this.electionEpoch += 1; removed as fail-and-retry will increase it but we do
+        // no0t want that
         this.electionStarterId = replica.getId();
         this.election = new Messages.Election(replica.getId(), this.electionEpoch, replica.epoch, new HashMap<>());
         replica.coordinatorId = -1;
@@ -158,7 +159,8 @@ public class ElectionManager {
         // forward message to next node in the ring
         nextNodeId = getNextNodeId();
         ActorRef nextNode = replica.group.get(nextNodeId);
-        nextNode.tell(this.election, replica.getSelfRef());
+        // nextNode.tell(this.election, replica.getSelfRef());
+        replica.sendTo((java.io.Serializable) this.election, nextNode);
 
         // start timer for ack of the receiver
         electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.timerDuration);
@@ -181,7 +183,9 @@ public class ElectionManager {
                             " ignoring election message with lower node epoch " + _msg.nodeEndingEpoch +
                             " than current epoch " + replica.epoch);
             // still need to ACK sender so it knows this node is alive
-            replica.getSenderRef().tell(new Messages.ElectionAck(), replica.getSelfRef());
+            // replica.getSenderRef().tell(new Messages.ElectionAck(),
+            // replica.getSelfRef());
+            replica.sendTo((java.io.Serializable) new Messages.ElectionAck(), replica.getSenderRef());
             return;
         }
 
@@ -191,7 +195,9 @@ public class ElectionManager {
                             " ignoring election message with lower epoch " + _msg.electionEpoch +
                             " than current epoch " + this.electionEpoch);
             // still need to ACK sender so it knows this node is alive
-            replica.getSenderRef().tell(new Messages.ElectionAck(), replica.getSelfRef());
+            // replica.getSenderRef().tell(new Messages.ElectionAck(),
+            // replica.getSelfRef());
+            replica.sendTo((java.io.Serializable) new Messages.ElectionAck(), replica.getSenderRef());
             return;
         }
         // check if teh election message epoch is equal but the starter id is lower than
@@ -202,14 +208,15 @@ public class ElectionManager {
                             " ignoring election message with equal epoch " + _msg.electionEpoch +
                             " but lower starter id " + _msg.starterId +
                             " than current starter id " + this.electionStarterId);
-             // still need to ACK sender so it knows this node is alive
-            replica.getSenderRef().tell(new Messages.ElectionAck(), replica.getSelfRef());
+            // still need to ACK sender so it knows this node is alive
+            // replica.getSenderRef().tell(new Messages.ElectionAck(),
+            // replica.getSelfRef());
+            replica.sendTo((java.io.Serializable) new Messages.ElectionAck(), replica.getSenderRef());
             return;
         }
 
         // save election message
         this.election = _msg;
-
 
         // if node still in NORMAL state, enter ELECTION state and handle election
         // message
@@ -222,11 +229,15 @@ public class ElectionManager {
         this.electionStarterId = _msg.starterId;
 
         // ack sender
-        replica.getSenderRef().tell(new Messages.ElectionAck(), replica.getSelfRef());
+        // replica.getSenderRef().tell(new Messages.ElectionAck(),
+        // replica.getSelfRef());
+        replica.sendTo((java.io.Serializable) new Messages.ElectionAck(), replica.getSenderRef());
 
-        // check if the election message epoch is lower than the current one, if so, ignore it
+        // check if the election message epoch is lower than the current one, if so,
+        // ignore it
 
-        // if the message contains my ID, that means it cycled back to me (travelled along all nodes)
+        // if the message contains my ID, that means it cycled back to me (travelled
+        // along all nodes)
         // otherwise, i never saw it and need to add myself as a candidate
         if (!_msg.candidates.containsKey(replica.getId())) {
             // add own data to the election message -> append node id and last seen message
@@ -238,7 +249,8 @@ public class ElectionManager {
 
             // forward message to next node in the ring
             ActorRef nextNode = replica.group.get(nextNodeId);
-            nextNode.tell(this.election, replica.getSelfRef());
+            // nextNode.tell(this.election, replica.getSelfRef());
+            replica.sendTo((java.io.Serializable) this.election, nextNode);
 
             replica.debugInfo(
                     "Replica " + replica.getId() +
@@ -248,7 +260,8 @@ public class ElectionManager {
             electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.timerDuration);
 
         } else {
-            //replica.getSenderRef().tell(new Messages.ElectionAck(), replica.getSelfRef()); already did above
+            // replica.getSenderRef().tell(new Messages.ElectionAck(),
+            // replica.getSelfRef()); already did above
             // if the node was already in election, it means the message cycled back to it,
             // therefore it needs to check if it is the best candidate
             if (replica.getId() == getBestId(_msg)) {
@@ -259,7 +272,8 @@ public class ElectionManager {
                 // addOwnCandidate(_msg); not needed, already there
                 nextNodeId = getNextNodeId();
                 ActorRef nextNode = replica.group.get(nextNodeId);
-                nextNode.tell(_msg, replica.getSelfRef());
+                // nextNode.tell(_msg, replica.getSelfRef());
+                replica.sendTo((java.io.Serializable) this.election, nextNode);
 
                 // create a timer
                 electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.timerDuration);
@@ -282,21 +296,21 @@ public class ElectionManager {
 
         if (!replica.toCommitQueue.isEmpty()) {
             candidates.put(replica.getId(), replica.toCommitQueue.lastKey()); // toCommitQueue is a tree map, so is
-                                                                                   // ordered by
+                                                                              // ordered by
             // NodeClock, get latest
         } else if (!replica.commitHistory.isEmpty()) {
             candidates.put(replica.getId(), replica.commitHistory.lastKey());
         } else {
-            candidates.put(replica.getId(), new Messages.NodeClock(0, 0)); // if no updates have been made yet, use                                                                  // default
+            candidates.put(replica.getId(), new Messages.NodeClock(0, 0)); // if no updates have been made yet, use //
+                                                                           // default
             // clock
         }
 
         return new Messages.Election(
-            _msg.starterId,
-            _msg.electionEpoch,
-            _msg.nodeEndingEpoch,
-            candidates
-    );
+                _msg.starterId,
+                _msg.electionEpoch,
+                _msg.nodeEndingEpoch,
+                candidates);
     }
 
     public void handleElectionAck(Messages.ElectionAck _msg) throws Exception {
@@ -324,7 +338,8 @@ public class ElectionManager {
         // forward message to next node in the ring (now skipping the crashed one)
         nextNodeId = getNextNodeId();
         ActorRef nextNode = replica.group.get(nextNodeId);
-        nextNode.tell(election, replica.getSelfRef());
+        // nextNode.tell(election, replica.getSelfRef());
+        replica.sendTo((java.io.Serializable) election, nextNode);
 
         // setup timer for the receiver ack
         electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.timerDuration);

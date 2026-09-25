@@ -54,7 +54,7 @@ public class SyncManager {
             // send synchronization message in broadcast to the other replicas to bring them up-to-date
             for (Map.Entry<Integer, ActorRef> node : replica.group.entrySet()) {
                 if (!replica.crashedReplicas.contains(node.getKey()) && node.getKey() != replica.getId()) {
-                    node.getValue().tell(synchMsg, replica.getSelfRef());
+                    replica.sendTo((java.io.Serializable) synchMsg, node.getValue());
                 }
             }
 
