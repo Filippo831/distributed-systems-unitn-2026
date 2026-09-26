@@ -133,7 +133,7 @@ public class ElectionManager {
         replica.cancelAllTimers();
 
         electionTimer = replica.createTimer(new Messages.ElectionTimeout(),
-                replica.timerDuration * replica.group.size() * 2);
+                replica.getElectionTimeoutDuration());
     }
 
     // entry point for the timeout handlers: switch to election state and start the
@@ -163,7 +163,7 @@ public class ElectionManager {
         replica.sendTo((java.io.Serializable) this.election, nextNode);
 
         // start timer for ack of the receiver
-        electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.timerDuration);
+        electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.getElectionAckTimeoutDuration());
 
         // log info
         replica.logInfo("Election protocol started.");
@@ -257,7 +257,7 @@ public class ElectionManager {
                             " forwarding to " + nextNodeId);
 
             // setup timer for the receiver ack
-            electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.timerDuration);
+            electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.getElectionAckTimeoutDuration());
 
         } else {
             // replica.getSenderRef().tell(new Messages.ElectionAck(),
@@ -276,7 +276,7 @@ public class ElectionManager {
                 replica.sendTo((java.io.Serializable) this.election, nextNode);
 
                 // create a timer
-                electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.timerDuration);
+                electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.getElectionAckTimeoutDuration());
             }
         }
 
@@ -342,7 +342,7 @@ public class ElectionManager {
         replica.sendTo((java.io.Serializable) election, nextNode);
 
         // setup timer for the receiver ack
-        electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.timerDuration);
+        electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.getElectionAckTimeoutDuration());
     }
 
     // back to NORMAL state, invoked by the synchronization process

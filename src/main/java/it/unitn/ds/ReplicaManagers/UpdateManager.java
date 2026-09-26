@@ -150,7 +150,7 @@ public class UpdateManager {
 
             // when the node sends UpdateRequest to the coordinator it starts waiting for
             // the Update message, so the updateTimer is started
-            Cancellable timer = replica.createTimer(new Messages.UpdateTimeout(), replica.timerDuration);
+            Cancellable timer = replica.createTimer(new Messages.UpdateTimeout(), replica.getUpdateTimeoutDuration());
 
             // create update timer, associated with the request ID
             updateTimers.put(requestId, timer);

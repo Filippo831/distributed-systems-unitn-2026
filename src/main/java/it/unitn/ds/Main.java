@@ -303,7 +303,7 @@ public class Main {
         ActorRef client = createClient(sys, r, "client", to, replicas.get(TARGET));
 
         int m = r.size();
-        client.tell(new WriteRequest(0, 100), ActorRef.noSender());
+        client.tell(new WriteRequest(0, 99), ActorRef.noSender());
         r.check("write succeeds with no crashes",
                 await(r, m, to.write, "WRITE_RESULT", e -> isWriteOk(e, 0, 100)));
 
@@ -317,7 +317,7 @@ public class Main {
         return r;
     }
 
-    /** 1 — Coordinator dies while idle (server reboot), must auto-failover. */
+    /** 1 — Coordinator dies while idle (server rboot), must auto-failover. */
     private static Report scenario1CoordinatorIdleCrash() throws Exception {
         final int N = 7, COORD = 0, TARGET = N - 1;
         Report r = new Report();

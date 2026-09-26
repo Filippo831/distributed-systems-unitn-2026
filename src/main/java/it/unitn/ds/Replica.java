@@ -41,6 +41,15 @@ public class Replica extends AbstractReplica {
     public Set<Integer> crashedReplicas = new HashSet<>();
 
     public int timerDuration;
+
+    // Phase-specific deadlines.  They are initialized after the group is known
+    // because the group-size tolerance is part of each deadline.
+    private long updateTimeoutDuration;
+    private long writeOkTimeoutDuration;
+    private long electionAckTimeoutDuration;
+    private long electionTimeoutDuration;
+
+    private static final long PHASE_SCHEDULER_MARGIN_MS = 300L;
     
     // keep track if there is a crash requested
     public Crash pendingCrash = null;
@@ -135,6 +144,37 @@ public class Replica extends AbstractReplica {
         callbackOnElectionStarted(crashedCoordinatorId);
     }
 
+    public long getUpdateTimeoutDuration() {
+        return updateTimeoutDuration;
+    }
+
+    public long getWriteOkTimeoutDuration() {
+        return writeOkTimeoutDuration;
+    }
+
+    public long getElectionAckTimeoutDuration() {
+        return electionAckTimeoutDuration;
+    }
+
+    public long getElectionTimeoutDuration() {
+        return electionTimeoutDuration;
+    }
+
+
+    /**
+     * Computes a deadline for a complete protocol phase.  The current update
+     * and WriteOk paths each have two network-channel hops: the request/ack
+     * reaches the coordinator and the response/update returns from it.
+     */
+    private long calculatePhaseTimeout(int protocolHops) {
+        long groupTolerance = Math.max(0L,
+                (long) getMaxLatencyPlusTolerance() - getMaxLatency());
+        return protocolHops * (long) getMaxLatency()
+                + groupTolerance
+                + PHASE_SCHEDULER_MARGIN_MS;
+    }
+
+
     // Manager getters, used by the managers to cooperate (e.g. sync -> update)
     public UpdateManager updateManager() {
         return updateManager;
@@ -213,7 +253,19 @@ public class Replica extends AbstractReplica {
     public void initSystem(InitSystem sysInit) {
         this.group = sysInit.group;
         this.coordinatorId = sysInit.coordinator_id;
-        this.timerDuration = getMaxLatencyPlusTolerance();
+
+        this.updateTimeoutDuration = calculatePhaseTimeout(2);
+        this.writeOkTimeoutDuration = calculatePhaseTimeout(2);
+        this.electionAckTimeoutDuration = calculatePhaseTimeout(2);
+
+        this.electionTimeoutDuration = Math.max(
+                1000L,
+                this.electionAckTimeoutDuration * Math.max(1, this.group.size()) * 2L);
+
+        this.timerDuration = (int) Math.min(
+                Integer.MAX_VALUE,
+                Math.max(this.updateTimeoutDuration, this.writeOkTimeoutDuration));
+
         if (this.id == this.coordinatorId) {
             // if this node is the coordinator, start sending heartbeat messages to the
             // other nodes
