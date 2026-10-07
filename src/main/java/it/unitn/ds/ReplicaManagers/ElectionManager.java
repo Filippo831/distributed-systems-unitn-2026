@@ -8,10 +8,9 @@ import java.util.Map;
 
 import akka.actor.ActorRef;
 import akka.actor.Cancellable;
+import it.unitn.ds.AbstractReplica.Crash;
 import it.unitn.ds.Messages;
 import it.unitn.ds.Replica;
-
-import it.unitn.ds.AbstractReplica.Crash;
 
 /**
  * Handles the ring-based election protocol: election messages, state switching
@@ -163,7 +162,7 @@ public class ElectionManager {
         replica.sendTo((java.io.Serializable) this.election, nextNode);
 
         // start timer for ack of the receiver
-        electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.getElectionAckTimeoutDuration());
+        armElectionAckTimer();
 
         // log info
         replica.logInfo("Election protocol started.");
@@ -257,7 +256,7 @@ public class ElectionManager {
                             " forwarding to " + nextNodeId);
 
             // setup timer for the receiver ack
-            electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.getElectionAckTimeoutDuration());
+            armElectionAckTimer();
 
         } else {
             // replica.getSenderRef().tell(new Messages.ElectionAck(),
@@ -276,7 +275,7 @@ public class ElectionManager {
                 replica.sendTo((java.io.Serializable) this.election, nextNode);
 
                 // create a timer
-                electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.getElectionAckTimeoutDuration());
+               armElectionAckTimer();
             }
         }
 
@@ -342,7 +341,7 @@ public class ElectionManager {
         replica.sendTo((java.io.Serializable) election, nextNode);
 
         // setup timer for the receiver ack
-        electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.getElectionAckTimeoutDuration());
+        armElectionAckTimer();
     }
 
     // back to NORMAL state, invoked by the synchronization process
@@ -356,4 +355,12 @@ public class ElectionManager {
         if (electionAckTimer != null)
             electionAckTimer.cancel();
     }
+
+    private void armElectionAckTimer() {
+        if (electionAckTimer != null) {
+            electionAckTimer.cancel();
+        }
+        electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.getElectionAckTimeoutDuration());
+    }
+
 }
