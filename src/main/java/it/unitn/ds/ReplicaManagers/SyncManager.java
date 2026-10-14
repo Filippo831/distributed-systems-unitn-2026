@@ -63,7 +63,7 @@ public class SyncManager {
             this.handleSynchronization(synchMsg);
 
         } catch (Exception ex) {
-            System.getLogger(SyncManager.class.getName()).log(System.Logger.Level.ERROR, (String) null, ex);
+            replica.logInfo("Error during synchronization: " + ex.getMessage());
         }
     }
 
