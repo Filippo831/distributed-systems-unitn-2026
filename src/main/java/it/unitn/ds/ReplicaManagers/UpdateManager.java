@@ -12,9 +12,9 @@ import java.util.UUID;
 import akka.actor.ActorRef;
 import akka.actor.Cancellable;
 import it.unitn.ds.AbstractClient;
+import it.unitn.ds.AbstractReplica.Crash;
 import it.unitn.ds.Messages;
 import it.unitn.ds.Replica;
-import it.unitn.ds.AbstractReplica.Crash;
 
 /**
  * Handles the write protocol: UpdateRequest (coordinator + replica branches),
@@ -284,7 +284,7 @@ public class UpdateManager {
     }
 
     // notify the originating client (if it is one of this node's clients)
-    private void notifyClient(Messages.NodeClock clock) {
+    public void notifyClient(Messages.NodeClock clock) {
         ActorRef client = updateClients.remove(clock);
         if (client != null) {
             Set<Messages.NodeClock> pending = myClients.get(client);

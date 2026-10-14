@@ -87,6 +87,9 @@ public class SyncManager {
                 replica.storage[data.index] = data.value;
                 replica.commitHistory.put(clock, data);
                 replica.onUpdateApplied(data.index, data.value);
+
+                // Changed: notify client
+                replica.updateManager().notifyClient(clock);
             }
         }
 
