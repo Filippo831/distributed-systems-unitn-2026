@@ -94,6 +94,7 @@ public class Client extends AbstractClient {
                 getSelf()
         );
 
+        this.log("requesting READ " + index + " to " + replica.path().name());
         readTimer.put(index, timer);
     }
 
@@ -125,6 +126,7 @@ public class Client extends AbstractClient {
                 getSelf()
         );
 
+        this.log("requesting WRITE (" + index + ", " + value + " to " + replica.path().name());
         writeTimer.put(key, timer);
     }
 
