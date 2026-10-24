@@ -41,12 +41,13 @@ public class SyncManager {
             Map<Messages.NodeClock, Messages.UpdateData> completeHistory = new TreeMap<>(replica.commitHistory);
             completeHistory.putAll(replica.toCommitQueue);
 
-            // build synchronization message with the id of the new coordinator and the complete update history
-            Messages.Synchronization synchMsg = new Messages.Synchronization(replica.getId(), completeHistory);
-
             // the new coordinator can start new epoch an reset the sequence number
             replica.epoch++;
             replica.seqNum = 0;
+
+            // build synchronization message with the id of the new coordinator and the complete update history
+            // ADDED epoch to synch message
+            Messages.Synchronization synchMsg = new Messages.Synchronization(replica.getId(), completeHistory, replica.epoch);
 
             // return to NORMAL state
             replica.actorContext().become(replica.createReceive());
@@ -70,10 +71,14 @@ public class SyncManager {
     // this function brings all replicas up to date with the updates 
     // it is called also by the coordinator itself to commit what was left in the toCommitQueue before the election
     public void handleSynchronization(Messages.Synchronization _msg) throws Exception {
-        // set new coordinator
+        // set new coordinator and epoch
         if (replica.coordinatorId != _msg.newCoordId) {
+            // new coordinator
             replica.coordinatorId = _msg.newCoordId;
             replica.onCoordinatorElected(_msg.newCoordId);
+
+            // ADDED: new epoch
+            replica.epoch = _msg.newEpoch;
         }
 
         // get up to date with updates -> these still have clock in the old view

@@ -122,6 +122,9 @@ public class ElectionManager {
         if (replica.coordinatorId != -1) {
             replica.crashedReplicas.add(replica.coordinatorId);
         }
+        
+        // ADDED: set coordinatorId at -1 as done in startElectionProtocol
+        replica.coordinatorId = -1;
 
         // this is done by changing the node behaviour using the "message filter"
         // defined in createElectionReceive
@@ -131,8 +134,8 @@ public class ElectionManager {
         // cancel all timers, not needed anymore
         replica.cancelAllTimers();
 
-        electionTimer = replica.createTimer(new Messages.ElectionTimeout(),
-                replica.getElectionTimeoutDuration());
+        // ADDED
+        armElectionTimer();
     }
 
     // entry point for the timeout handlers: switch to election state and start the
@@ -147,7 +150,7 @@ public class ElectionManager {
     public void startElectionProtocol() {
         // reset election message and coordinator id
         // this.electionEpoch += 1; removed as fail-and-retry will increase it but we do
-        // no0t want that
+        // not want that
         this.electionStarterId = replica.getId();
         this.election = new Messages.Election(replica.getId(), this.electionEpoch, replica.epoch, new HashMap<>());
         replica.coordinatorId = -1;
@@ -323,6 +326,11 @@ public class ElectionManager {
         replica.debugInfo(
                 "Election timeout on replica " + replica.getId());
         this.electionEpoch += 1;
+
+        // ADDED: re-arm election timer 
+       armElectionTimer();
+
+        // re-start election protocol
         startElectionProtocol();
     }
 
@@ -330,8 +338,14 @@ public class ElectionManager {
         replica.debugInfo(
                 "Election ACK timeout on replica " + replica.getId() +
                         " waiting for ACK from " + nextNodeId);
+        
         // ACK to an election message was not received, add node to crashedReplicas
         replica.crashedReplicas.add(nextNodeId);
+        
+        // ADDED: remove crashed node from the election (important because crashed could be the best and still be considered... message will loop until electionTimer expires)
+        Map<Integer, Messages.NodeClock> candidates = new HashMap<>(election.candidates);
+        candidates.remove(nextNodeId); 
+        election = new Messages.Election(election.starterId, election.electionEpoch, election.nodeEndingEpoch, candidates);
 
         // retry now
         // forward message to next node in the ring (now skipping the crashed one)
@@ -361,6 +375,12 @@ public class ElectionManager {
             electionAckTimer.cancel();
         }
         electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.getElectionAckTimeoutDuration());
+    }
+
+    // ADDED armElectionTimer
+    private void armElectionTimer() {
+        if (electionTimer != null) electionTimer.cancel();
+        electionTimer = replica.createTimer(new Messages.ElectionTimeout(), replica.getElectionTimeoutDuration());
     }
 
 }

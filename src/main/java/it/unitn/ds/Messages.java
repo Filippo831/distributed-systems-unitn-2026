@@ -182,9 +182,13 @@ public class Messages {
         // to date before starting the new epoch
         public final Map<Messages.NodeClock, Messages.UpdateData> coordHistory;
 
-        public Synchronization(int newCoordId, Map<NodeClock, UpdateData> coordHistory) {
+        // ADDED: pass new epoch to align replicas
+        public final int newEpoch;
+
+        public Synchronization(int newCoordId, Map<NodeClock, UpdateData> coordHistory, int newEpoch) {
             this.newCoordId = newCoordId;
             this.coordHistory = Collections.unmodifiableMap(new TreeMap<>(coordHistory));
+            this.newEpoch = newEpoch;
             // this.coordHistory =new TreeMap<>(coordHistory);
         }
     }

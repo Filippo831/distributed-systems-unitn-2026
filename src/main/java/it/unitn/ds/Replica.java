@@ -310,13 +310,13 @@ public class Replica extends AbstractReplica {
     // we want to handle only the election messages, ignoring updates
     public final Receive createElectionReceive() {
         return createBaseReceiveBuilder()
+                // ADDED: handle reads
+                .match(Messages.ReadRequest.class, this::handleReadRequest)
+                
                 // handle election messages, synch messages and acks
                 .match(Messages.Election.class, electionManager::handleElection)
                 .match(Messages.ElectionAck.class, electionManager::handleElectionAck)
                 .match(Messages.Synchronization.class, syncManager::handleSynchronization)
-
-                // .match(Messages.UpdateSyncRequest.class, syncManager::handleUpdateSyncRequest)
-                // .match(Messages.UpdateSyncResponse.class, syncManager::handleUpdateSyncResponse)
 
                 // also handle the timeouts
                 .match(Messages.ElectionTimeout.class, electionManager::handleElectionTimeout)
