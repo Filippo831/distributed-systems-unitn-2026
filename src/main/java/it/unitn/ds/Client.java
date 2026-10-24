@@ -1,11 +1,11 @@
 package it.unitn.ds;
 
+import java.util.Map;
+import java.util.Optional;
+
 import akka.actor.ActorRef;
 import akka.actor.Cancellable;
 import akka.actor.Props;
-
-import java.util.Map;
-import java.util.Optional;
 
 public class Client extends AbstractClient {
     public record IntPair(int index, int value) {}
@@ -94,7 +94,7 @@ public class Client extends AbstractClient {
                 getSelf()
         );
 
-        this.log("requesting READ " + index + " to " + replica.path().name());
+        this.log("requesting READ (" + index + ") to " + replica.path().name());
         readTimer.put(index, timer);
     }
 
@@ -126,7 +126,7 @@ public class Client extends AbstractClient {
                 getSelf()
         );
 
-        this.log("requesting WRITE (" + index + ", " + value + " to " + replica.path().name());
+        this.log("requesting WRITE (" + index + ", " + value + ") to " + replica.path().name());
         writeTimer.put(key, timer);
     }
 
