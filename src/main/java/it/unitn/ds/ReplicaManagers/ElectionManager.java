@@ -34,10 +34,11 @@ public class ElectionManager {
 
     private int nextNodeId;
 
-    // keep track of the lowest election id initiator. The smallest wins
+    // epoch of the election round this replica is in, the highest (newer) election epoch wins
     private int electionEpoch = -1;
 
-    // keep track of the message initiator id
+    // keep track of the lowest election id initiator
+    // on equal election epoch the lowest starter id wins
     private int electionStarterId = -1;
 
     public ElectionManager(Replica _replica) {
@@ -179,67 +180,81 @@ public class ElectionManager {
                         " electionEpoch=" + _msg.electionEpoch +
                         " candidates=" + _msg.candidates.keySet());
 
+        // this allows a replica to ignore election message with lower node epoch (not election epoch)
+        // basically acts as a guard against late election messages
         if (_msg.nodeEndingEpoch < replica.epoch) {
             replica.debugInfo(
                     "Replica " + replica.getId() +
                             " ignoring election message with lower node epoch " + _msg.nodeEndingEpoch +
                             " than current epoch " + replica.epoch);
             // still need to ACK sender so it knows this node is alive
-            // replica.getSenderRef().tell(new Messages.ElectionAck(),
-            // replica.getSelfRef());
             replica.sendTo((java.io.Serializable) new Messages.ElectionAck(), replica.getSenderRef());
             return;
         }
 
-        if (_msg.electionEpoch < this.electionEpoch) {
-            replica.debugInfo(
-                    "Replica " + replica.getId() +
-                            " ignoring election message with lower epoch " + _msg.electionEpoch +
-                            " than current epoch " + this.electionEpoch);
-            // still need to ACK sender so it knows this node is alive
-            // replica.getSenderRef().tell(new Messages.ElectionAck(),
-            // replica.getSelfRef());
-            replica.sendTo((java.io.Serializable) new Messages.ElectionAck(), replica.getSenderRef());
-            return;
-        }
-        // check if teh election message epoch is equal but the starter id is lower than
-        // the current one, if so, ignore it
-        else if (_msg.electionEpoch == this.electionEpoch && _msg.starterId > this.electionStarterId) {
-            replica.debugInfo(
-                    "Replica " + replica.getId() +
-                            " ignoring election message with equal epoch " + _msg.electionEpoch +
-                            " but lower starter id " + _msg.starterId +
-                            " than current starter id " + this.electionStarterId);
-            // still need to ACK sender so it knows this node is alive
-            // replica.getSenderRef().tell(new Messages.ElectionAck(),
-            // replica.getSelfRef());
-            replica.sendTo((java.io.Serializable) new Messages.ElectionAck(), replica.getSenderRef());
-            return;
-        }
+        // ADDED: save wheter the node was already in election or it's the first election message it receives (still in NORMAL)
+        boolean wasInElection = inElection;
 
-        // save election message
-        this.election = _msg;
-
-        // if node still in NORMAL state, enter ELECTION state and handle election
-        // message
-        if (!inElection) {
-            // go to election state
+        // ADDED: if node still in NORMAL state, enter ELECTION state
+        if (!wasInElection) {
             enterElectionState();
         }
+        
+        // ADDED: if the node was already in election we consider this part (filtering)
+        // otherwise just consider this election message in all cases as it is the first one it sees
+        if (wasInElection) {
+            // this allows a replica to ignore election message with lower election epoch
+            // this allows to ignore old election messages in case a newer election was started (e.g. due to electionTimer expiration)
+            if (_msg.electionEpoch < this.electionEpoch) {
+                replica.debugInfo(
+                        "Replica " + replica.getId() +
+                                " ignoring election message with lower election epoch " + _msg.electionEpoch +
+                                " than current epoch " + this.electionEpoch);
+                // still need to ACK sender so it knows this node is alive
+                replica.sendTo((java.io.Serializable) new Messages.ElectionAck(), replica.getSenderRef());
+                return;
+            }
 
-        this.electionEpoch = _msg.electionEpoch;
-        this.electionStarterId = _msg.starterId;
+            // if the election epoch of the message is equal 
+            // but the starter id is higher than the current one, ignore it
+            else if (_msg.electionEpoch == this.electionEpoch && _msg.starterId > this.electionStarterId) {
+                replica.debugInfo(
+                        "Replica " + replica.getId() +
+                                " ignoring election message with equal epoch " + _msg.electionEpoch +
+                                " but higher starter id " + _msg.starterId +
+                                " than current starter id " + this.electionStarterId);
+                // still need to ACK sender so it knows this node is alive
+                replica.sendTo((java.io.Serializable) new Messages.ElectionAck(), replica.getSenderRef());
+                return;
+            }
+        }
+        
+        // election message is accepted: either first election message seen, current election or a new election with higher priority
+        
+        // ADDED: check if election state changed
+        boolean electionChanged = _msg.electionEpoch != this.electionEpoch || _msg.starterId != this.electionStarterId;
+
+        // save the election message content (candidates map changes every time) 
+        this.election = _msg;
+
+        // ADDED: only if the election state changed
+        if (electionChanged) {
+            this.electionEpoch = _msg.electionEpoch;
+            this.electionStarterId = _msg.starterId;
+
+            // ADDED: if the replica adopts a new election (electionEpoch or electionStarterId is different) then re-arm the timer 
+            // - give the new "winning" election a try, without this in case of electionTimer expiration a new election is considered 
+            // but the replicas still have the timer of the old election armed, leading to the cascading expiration of the older timers
+            // - if the same election is looping electionChanged would be false and the timer would expire!
+            if (wasInElection) {
+                armElectionTimer();
+            }
+        }
 
         // ack sender
-        // replica.getSenderRef().tell(new Messages.ElectionAck(),
-        // replica.getSelfRef());
         replica.sendTo((java.io.Serializable) new Messages.ElectionAck(), replica.getSenderRef());
 
-        // check if the election message epoch is lower than the current one, if so,
-        // ignore it
-
-        // if the message contains my ID, that means it cycled back to me (travelled
-        // along all nodes)
+        // if the message contains my ID, that means it cycled back to me (travelled along all nodes)
         // otherwise, i never saw it and need to add myself as a candidate
         if (!_msg.candidates.containsKey(replica.getId())) {
             // add own data to the election message -> append node id and last seen message
@@ -262,10 +277,7 @@ public class ElectionManager {
             armElectionAckTimer();
 
         } else {
-            // replica.getSenderRef().tell(new Messages.ElectionAck(),
-            // replica.getSelfRef()); already did above
-            // if the node was already in election, it means the message cycled back to it,
-            // therefore it needs to check if it is the best candidate
+            // message cycled back, therefore it needs to check if it is the best candidate
             if (replica.getId() == getBestId(_msg)) {
                 // if it is, elect it as coordinator
                 replica.syncManager().startSynchronization();

@@ -15,10 +15,12 @@ public class Messages {
     public static class UpdateData {
         public final int index;
         public final int value;
+        public final String requestId;
 
-        public UpdateData(int _index, int _value) {
+        public UpdateData(int _index, int _value, String _requestId) {
             index = _index;
             value = _value;
+            requestId = _requestId;
         }
     }
 

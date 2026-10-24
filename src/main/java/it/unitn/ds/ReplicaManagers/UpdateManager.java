@@ -91,7 +91,15 @@ public class UpdateManager {
             // pair <e, i>
             Messages.NodeClock updateClock = new Messages.NodeClock(replica.epoch, replica.seqNum);
 
-            Messages.UpdateData updateData = new Messages.UpdateData(_msg.index, _msg.value);
+            String requestId;
+            if (_msg.id == null) {
+                requestId = replica.getId() + "-" + UUID.randomUUID();
+            } else {
+                requestId = _msg.id;
+            }
+
+             // ADDED: requestId to updateData
+            Messages.UpdateData updateData = new Messages.UpdateData(_msg.index, _msg.value, requestId);
 
             updateClients.put(new Messages.NodeClock(replica.epoch, replica.seqNum), _msg.client);
 
@@ -105,13 +113,7 @@ public class UpdateManager {
             this.ackCounters.put(updateClock, 1);
             replica.toCommitQueue.put(updateClock, updateData);
 
-            String requestId;
-            if (_msg.id == null) {
-                requestId = replica.getId() + "-" + UUID.randomUUID();
-            } else {
-                requestId = _msg.id;
-            }
-
+            // CHECK
             pendingUpdateRequests.remove(requestId);
 
             // if is the coordinator who received the updateRequest, send an UPDATE to the
@@ -168,7 +170,8 @@ public class UpdateManager {
         pendingUpdateRequests.remove(_msg.id);
 
         // get node clock assigned by coordinator _msg.clock
-        replica.toCommitQueue.put(_msg.clock, new Messages.UpdateData(_msg.index, _msg.value));
+        // ADDED:  _msg.id (requestId)
+        replica.toCommitQueue.put(_msg.clock, new Messages.UpdateData(_msg.index, _msg.value, _msg.id));
 
         updateClients.put(_msg.clock, _msg.client);
 
@@ -308,20 +311,41 @@ public class UpdateManager {
         // isCoord tells us if the node is the coordinator or another replica
         boolean isCoord = (replica.getId() == replica.coordinatorId);
 
-        // the UpdateRequest must be constructed differently based on whether the replica is coordinator or not
+        // ADDED: some pending requests may have been completed in the synch phase, but still present in pendingUpdateRequests
+        // extract them to remove them and avoid repeated write request
+        Map<String, Messages.UpdateData> completedPendings = new HashMap<>();
+        for (Messages.UpdateData committedData : replica.commitHistory.values()) {
+            if (committedData.requestId != null) completedPendings.put(committedData.requestId, committedData);
+        }
+        
         for (Map.Entry<String, Messages.UpdateRequest> entry : new HashMap<>(pendingUpdateRequests).entrySet()) {
-            Messages.UpdateRequest pendingUpdateRequest = entry.getValue();
-            Messages.UpdateRequest retry = new Messages.UpdateRequest(
-                    pendingUpdateRequest.index,
-                    pendingUpdateRequest.value,
-                    pendingUpdateRequest.client,
-                    !isCoord, // if node isCoord (true), fromReplica is false (!isCoord)
-                    entry.getKey());
+            // ADDED: check whether tha request was already committed during the synch phase
+            // if it was then remove it from the pendingUpdateRequests and notify the client
+            if(completedPendings.containsKey(entry.getKey())){ // entry.getKey() = requestId 
+                Messages.UpdateData completedPendingData = completedPendings.get(entry.getKey());
+                pendingUpdateRequests.remove(entry.getKey());
 
-            try {
-                handleUpdateRequest(retry);
-            } catch (Exception e) {
-                replica.logInfo("Error in retry pending request: " + e.getMessage());
+                // notify the client, because notifyClient called in synch does not handle these pending requests as updateClients.remove(clock); return null
+                // this because if the request is still in pendingUpdateRequests the replica did not receive the Update message, so it has no updateClients entry for this clock
+                replica.sendTo(new AbstractClient.WriteResult(true, completedPendingData.index, completedPendingData.value, replica.getId()), entry.getValue().client);
+            }
+            else {
+                // if pending update request is not yet committed, resend it
+                Messages.UpdateRequest pendingUpdateRequest = entry.getValue();
+
+                // the UpdateRequest must be constructed differently based on whether the replica is coordinator or not
+                Messages.UpdateRequest retry = new Messages.UpdateRequest(
+                        pendingUpdateRequest.index,
+                        pendingUpdateRequest.value,
+                        pendingUpdateRequest.client,
+                        !isCoord, // if node isCoord (true), fromReplica is false (!isCoord)
+                        entry.getKey());
+
+                try {
+                    handleUpdateRequest(retry);
+                } catch (Exception e) {
+                    replica.logInfo("Error in retry pending request: " + e.getMessage());
+                }
             }
         }
     }
