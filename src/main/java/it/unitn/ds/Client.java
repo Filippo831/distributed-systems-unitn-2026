@@ -1,5 +1,6 @@
 package it.unitn.ds;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -8,10 +9,13 @@ import akka.actor.Cancellable;
 import akka.actor.Props;
 
 public class Client extends AbstractClient {
-    public record IntPair(int index, int value) {}
+    public record IntPair(int index, int value) {
+    }
+
     private Map<Integer, Cancellable> readTimer = null;
-    // use both the index of the write and the value to identify the timer for a write operation
-    private Map<IntPair, Cancellable> writeTimer = null;
+    // use both the index of the write and the value to identify the timer for a
+    // write operation
+    private Map<IntPair, List<Cancellable>> writeTimer = null;
 
     Client(long readTimeoutDelay, long writeTimeoutDelay, Optional<ActorRef> defaultTargetReplica,
             Optional<ActorRef> listener) {
@@ -41,7 +45,7 @@ public class Client extends AbstractClient {
     private final void handleReadResult(AbstractClient.ReadResult _msg) throws Exception {
         callbackOnReadResult(_msg);
         // if (readTimer != null && !readTimer.isCancelled()) {
-        //     readTimer.cancel();
+        // readTimer.cancel();
         // }
         // remove the timer for this index from the map
         if (readTimer != null && readTimer.containsKey(_msg.index)) {
@@ -56,15 +60,19 @@ public class Client extends AbstractClient {
     private final void handleWriteResult(AbstractClient.WriteResult _msg) throws Exception {
         callbackOnWriteResult(_msg);
         // if (writeTimer != null && !writeTimer.isCancelled()) {
-        //     writeTimer.cancel();
+        // writeTimer.cancel();
         // }
         // remove the timer for this index and value from the map
         if (writeTimer != null && writeTimer.containsKey(new IntPair(_msg.index, _msg.value))) {
-            Cancellable timer = writeTimer.get(new IntPair(_msg.index, _msg.value));
+            Cancellable timer = writeTimer.get(new IntPair(_msg.index, _msg.value)).getFirst();
             if (timer != null && !timer.isCancelled()) {
                 timer.cancel();
             }
-            writeTimer.remove(new IntPair(_msg.index, _msg.value));
+            // remove the first element of the array associaced with the IntPair
+            writeTimer.get(new IntPair(_msg.index, _msg.value)).removeFirst();
+            if (writeTimer.get(new IntPair(_msg.index, _msg.value)).isEmpty()) {
+                writeTimer.remove(new IntPair(_msg.index, _msg.value));
+            }
         }
     }
 
@@ -91,8 +99,7 @@ public class Client extends AbstractClient {
                 getSelf(),
                 new AbstractClient.ReadTimeout(getSelf(), replica, index),
                 getContext().getSystem().dispatcher(),
-                getSelf()
-        );
+                getSelf());
 
         this.log("requesting READ (" + index + ") to " + replica.path().name());
         readTimer.put(index, timer);
@@ -111,23 +118,19 @@ public class Client extends AbstractClient {
 
         IntPair key = new IntPair(index, value);
 
-        if (writeTimer.containsKey(key)) {
-            Cancellable timer = writeTimer.get(key);
-            if (timer != null && !timer.isCancelled()) {
-                timer.cancel();
-            }
-        }
-
         Cancellable timer = getContext().getSystem().scheduler().scheduleOnce(
                 scala.concurrent.duration.Duration.create(getWriteTimeoutDelay(), "milliseconds"),
                 getSelf(),
                 new AbstractClient.WriteTimeout(getSelf(), replica, index, value),
                 getContext().getSystem().dispatcher(),
-                getSelf()
-        );
+                getSelf());
+
+        if (writeTimer.containsKey(key)) {
+            writeTimer.get(key).add(timer);
+        }
 
         this.log("requesting WRITE (" + index + ", " + value + ") to " + replica.path().name());
-        writeTimer.put(key, timer);
+        writeTimer.put(key, List.of(timer));
     }
 
     public void handleReadTimeout(AbstractClient.ReadTimeout _msg) {
