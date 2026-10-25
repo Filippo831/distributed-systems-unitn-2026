@@ -103,7 +103,7 @@ public class UpdateManager {
 
             updateClients.put(new Messages.NodeClock(replica.epoch, replica.seqNum), _msg.client);
 
-            // CHECK: removed to know who the coordinator has to respond to
+            // CHECK: 
             if (!_msg.fromReplica) {
                 myClients.computeIfAbsent(_msg.client, k -> new HashSet<>()).add(updateClock);
             } else if (myClients.containsKey(_msg.client)) {
@@ -113,11 +113,12 @@ public class UpdateManager {
             this.ackCounters.put(updateClock, 1);
             replica.toCommitQueue.put(updateClock, updateData);
 
-            // CHECK
+            // - if this replica became coordinator while it had this request pending (forwarded to the old crashed coordinator), 
+            //    it must be removed from the pendingUpdateRequests
+            // - x new requests or requests from other replicas this simply does nothing (requestId is not in pendingUpdateRequests)
             pendingUpdateRequests.remove(requestId);
 
-            // if is the coordinator who received the updateRequest, send an UPDATE to the
-            // replicas
+            // if is the coordinator who received the updateRequest, send an UPDATE to the replicas
             replica.broadcast(
                     new Messages.Update(_msg.index, _msg.value, new Messages.NodeClock(replica.epoch, replica.seqNum),
                             _msg.client, requestId));
