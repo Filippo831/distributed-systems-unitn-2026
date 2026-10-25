@@ -3,6 +3,7 @@ package it.unitn.ds.ReplicaManagers;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -37,7 +38,7 @@ public class UpdateManager {
     private Map<Messages.NodeClock, ActorRef> updateClients = new HashMap<>();
 
     // messages waiting for the Update response, indexed by request id
-    private Map<String, Messages.UpdateRequest> pendingUpdateRequests = new HashMap<>();
+    private Map<String, Messages.UpdateRequest> pendingUpdateRequests = new LinkedHashMap<>();
 
     // clocks that received the WriteOk and are ready to be committed
     private TreeSet<Messages.NodeClock> readyToCommit = new TreeSet<>();
@@ -98,12 +99,12 @@ public class UpdateManager {
                 requestId = _msg.id;
             }
 
-             // ADDED: requestId to updateData
+            // ADDED: requestId to updateData
             Messages.UpdateData updateData = new Messages.UpdateData(_msg.index, _msg.value, requestId);
 
             updateClients.put(new Messages.NodeClock(replica.epoch, replica.seqNum), _msg.client);
 
-            // CHECK: 
+            // CHECK:
             if (!_msg.fromReplica) {
                 myClients.computeIfAbsent(_msg.client, k -> new HashSet<>()).add(updateClock);
             } else if (myClients.containsKey(_msg.client)) {
@@ -113,12 +114,15 @@ public class UpdateManager {
             this.ackCounters.put(updateClock, 1);
             replica.toCommitQueue.put(updateClock, updateData);
 
-            // - if this replica became coordinator while it had this request pending (forwarded to the old crashed coordinator), 
-            //    it must be removed from the pendingUpdateRequests
-            // - x new requests or requests from other replicas this simply does nothing (requestId is not in pendingUpdateRequests)
+            // - if this replica became coordinator while it had this request pending
+            // (forwarded to the old crashed coordinator),
+            // it must be removed from the pendingUpdateRequests
+            // - x new requests or requests from other replicas this simply does nothing
+            // (requestId is not in pendingUpdateRequests)
             pendingUpdateRequests.remove(requestId);
 
-            // if is the coordinator who received the updateRequest, send an UPDATE to the replicas
+            // if is the coordinator who received the updateRequest, send an UPDATE to the
+            // replicas
             replica.broadcast(
                     new Messages.Update(_msg.index, _msg.value, new Messages.NodeClock(replica.epoch, replica.seqNum),
                             _msg.client, requestId));
@@ -148,6 +152,12 @@ public class UpdateManager {
             // add to pending requests
             pendingUpdateRequests.put(requestId, forwardMsg);
 
+            // election in progress: no coordinator to send to, the request will be resent
+            // after synchronization
+            if (replica.coordinatorId == -1) {
+                return;
+            }
+
             // send to coordinator
             replica.sendTo((java.io.Serializable) forwardMsg, replica.group.get(replica.coordinatorId));
 
@@ -171,7 +181,7 @@ public class UpdateManager {
         pendingUpdateRequests.remove(_msg.id);
 
         // get node clock assigned by coordinator _msg.clock
-        // ADDED:  _msg.id (requestId)
+        // ADDED: _msg.id (requestId)
         replica.toCommitQueue.put(_msg.clock, new Messages.UpdateData(_msg.index, _msg.value, _msg.id));
 
         updateClients.put(_msg.clock, _msg.client);
@@ -184,7 +194,8 @@ public class UpdateManager {
         }
 
         // send ACK back to the coordinator
-        // replica.group.get(replica.coordinatorId).tell(new Messages.Ack(_msg.clock), replica.getSelfRef());
+        // replica.group.get(replica.coordinatorId).tell(new Messages.Ack(_msg.clock),
+        // replica.getSelfRef());
         replica.sendTo((java.io.Serializable) new Messages.Ack(_msg.clock), replica.group.get(replica.coordinatorId));
 
         // when the node sends ACK to the coordinator it starts waiting for the WriteOk
@@ -312,29 +323,35 @@ public class UpdateManager {
         // isCoord tells us if the node is the coordinator or another replica
         boolean isCoord = (replica.getId() == replica.coordinatorId);
 
-        // ADDED: some pending requests may have been completed in the synch phase, but still present in pendingUpdateRequests
+        // ADDED: some pending requests may have been completed in the synch phase, but
+        // still present in pendingUpdateRequests
         // extract them to remove them and avoid repeated write request
         Map<String, Messages.UpdateData> completedPendings = new HashMap<>();
         for (Messages.UpdateData committedData : replica.commitHistory.values()) {
-            if (committedData.requestId != null) completedPendings.put(committedData.requestId, committedData);
+            if (committedData.requestId != null)
+                completedPendings.put(committedData.requestId, committedData);
         }
-        
-        for (Map.Entry<String, Messages.UpdateRequest> entry : new HashMap<>(pendingUpdateRequests).entrySet()) {
+
+        for (Map.Entry<String, Messages.UpdateRequest> entry : new LinkedHashMap<>(pendingUpdateRequests).entrySet()) {
             // ADDED: check whether tha request was already committed during the synch phase
             // if it was then remove it from the pendingUpdateRequests and notify the client
-            if(completedPendings.containsKey(entry.getKey())){ // entry.getKey() = requestId 
+            if (completedPendings.containsKey(entry.getKey())) { // entry.getKey() = requestId
                 Messages.UpdateData completedPendingData = completedPendings.get(entry.getKey());
                 pendingUpdateRequests.remove(entry.getKey());
 
-                // notify the client, because notifyClient called in synch does not handle these pending requests as updateClients.remove(clock); return null
-                // this because if the request is still in pendingUpdateRequests the replica did not receive the Update message, so it has no updateClients entry for this clock
-                replica.sendTo(new AbstractClient.WriteResult(true, completedPendingData.index, completedPendingData.value, replica.getId()), entry.getValue().client);
-            }
-            else {
+                // notify the client, because notifyClient called in synch does not handle these
+                // pending requests as updateClients.remove(clock); return null
+                // this because if the request is still in pendingUpdateRequests the replica did
+                // not receive the Update message, so it has no updateClients entry for this
+                // clock
+                replica.sendTo(new AbstractClient.WriteResult(true, completedPendingData.index,
+                        completedPendingData.value, replica.getId()), entry.getValue().client);
+            } else {
                 // if pending update request is not yet committed, resend it
                 Messages.UpdateRequest pendingUpdateRequest = entry.getValue();
 
-                // the UpdateRequest must be constructed differently based on whether the replica is coordinator or not
+                // the UpdateRequest must be constructed differently based on whether the
+                // replica is coordinator or not
                 Messages.UpdateRequest retry = new Messages.UpdateRequest(
                         pendingUpdateRequest.index,
                         pendingUpdateRequest.value,
@@ -358,7 +375,7 @@ public class UpdateManager {
         readyToCommit.clear();
         ackCounters.clear();
 
-        // discard update pending from the previous epoch since they will be 
+        // discard update pending from the previous epoch since they will be
         // regenerated with a new clock if they failed before
         updateClients.clear();
         for (Set<Messages.NodeClock> pending : myClients.values()) {

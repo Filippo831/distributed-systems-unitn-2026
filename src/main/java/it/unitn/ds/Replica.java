@@ -321,6 +321,9 @@ public class Replica extends AbstractReplica {
                 // also handle the timeouts
                 .match(Messages.ElectionTimeout.class, electionManager::handleElectionTimeout)
                 .match(Messages.ElectionAckTimeout.class, electionManager::handleElectionAckTimeout)
+                .match(Messages.UpdateRequest.class, updateManager::handleUpdateRequest)
+                .match(Messages.ReadRequest.class, this::handleReadRequest)
+
 
                 //.match(Messages.UpdateSyncTimeout.class, syncManager::handleUpdateSyncTimeout)
                 .build();
