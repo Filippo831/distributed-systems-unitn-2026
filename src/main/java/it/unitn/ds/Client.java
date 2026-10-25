@@ -125,12 +125,10 @@ public class Client extends AbstractClient {
                 getContext().getSystem().dispatcher(),
                 getSelf());
 
-        if (writeTimer.containsKey(key)) {
-            writeTimer.get(key).add(timer);
-        }
+
+        writeTimer.computeIfAbsent(key, k -> new java.util.ArrayList<>()).add(timer);
 
         this.log("requesting WRITE (" + index + ", " + value + ") to " + replica.path().name());
-        writeTimer.put(key, List.of(timer));
     }
 
     public void handleReadTimeout(AbstractClient.ReadTimeout _msg) {
