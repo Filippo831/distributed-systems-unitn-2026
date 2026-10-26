@@ -41,6 +41,11 @@ public class ElectionManager {
     // on equal election epoch the lowest starter id wins
     private int electionStarterId = -1;
 
+    // track outstanding election ack
+    private int outstandingAckNode = -1;
+    private int outstandingAckEpoch = -1;
+    private int outstandingAckStarterId = -1;
+
     public ElectionManager(Replica _replica) {
         this.replica = _replica;
     }
@@ -188,7 +193,7 @@ public class ElectionManager {
                             " ignoring election message with lower node epoch " + _msg.nodeEndingEpoch +
                             " than current epoch " + replica.epoch);
             // still need to ACK sender so it knows this node is alive
-            replica.sendTo((java.io.Serializable) new Messages.ElectionAck(), replica.getSenderRef());
+            replica.sendTo((java.io.Serializable) new Messages.ElectionAck(_msg.electionEpoch, _msg.starterId), replica.getSenderRef());
             return;
         }
 
@@ -211,7 +216,7 @@ public class ElectionManager {
                                 " ignoring election message with lower election epoch " + _msg.electionEpoch +
                                 " than current epoch " + this.electionEpoch);
                 // still need to ACK sender so it knows this node is alive
-                replica.sendTo((java.io.Serializable) new Messages.ElectionAck(), replica.getSenderRef());
+                replica.sendTo((java.io.Serializable) new Messages.ElectionAck(_msg.electionEpoch, _msg.starterId), replica.getSenderRef());
                 return;
             }
 
@@ -224,7 +229,7 @@ public class ElectionManager {
                                 " but higher starter id " + _msg.starterId +
                                 " than current starter id " + this.electionStarterId);
                 // still need to ACK sender so it knows this node is alive
-                replica.sendTo((java.io.Serializable) new Messages.ElectionAck(), replica.getSenderRef());
+                replica.sendTo((java.io.Serializable) new Messages.ElectionAck(_msg.electionEpoch, _msg.starterId), replica.getSenderRef());
                 return;
             }
         }
@@ -252,7 +257,7 @@ public class ElectionManager {
         }
 
         // ack sender
-        replica.sendTo((java.io.Serializable) new Messages.ElectionAck(), replica.getSenderRef());
+        replica.sendTo((java.io.Serializable) new Messages.ElectionAck(_msg.electionEpoch, _msg.starterId), replica.getSenderRef());
 
         // if the message contains my ID, that means it cycled back to me (travelled along all nodes)
         // otherwise, i never saw it and need to add myself as a candidate
@@ -328,9 +333,13 @@ public class ElectionManager {
     }
 
     public void handleElectionAck(Messages.ElectionAck _msg) throws Exception {
-        // sender of election message can cancel the timer now that it received the ACK
-        if (electionAckTimer != null)
+        // Only cancel if this ACK matches the current outstanding request (ignore stale ACKs)
+        if (electionAckTimer != null &&
+                _msg.electionEpoch == outstandingAckEpoch &&
+                _msg.starterId == outstandingAckStarterId) {
             electionAckTimer.cancel();
+            electionAckTimer = null;
+        }
     }
 
     public void handleElectionTimeout(Messages.ElectionTimeout _msg) throws Exception {
@@ -380,12 +389,18 @@ public class ElectionManager {
             electionTimer.cancel();
         if (electionAckTimer != null)
             electionAckTimer.cancel();
+        outstandingAckNode = -1;
+        outstandingAckEpoch = -1;
+        outstandingAckStarterId = -1;
     }
 
     private void armElectionAckTimer() {
         if (electionAckTimer != null) {
             electionAckTimer.cancel();
         }
+        outstandingAckNode = nextNodeId;
+        outstandingAckEpoch = this.electionEpoch;
+        outstandingAckStarterId = this.electionStarterId;
         electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.getElectionAckTimeoutDuration());
     }
 

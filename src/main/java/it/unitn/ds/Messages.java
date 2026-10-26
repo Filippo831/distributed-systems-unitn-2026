@@ -174,7 +174,18 @@ public class Messages {
     }
 
     public static class ElectionAck implements Serializable {
-        // empty, just a ack election message sender
+        public final int electionEpoch;
+        public final int starterId;
+
+        public ElectionAck() {
+            this.electionEpoch = -1;
+            this.starterId = -1;
+        }
+
+        public ElectionAck(int electionEpoch, int starterId) {
+            this.electionEpoch = electionEpoch;
+            this.starterId = starterId;
+        }
     }
 
     public static class Synchronization implements Serializable {
