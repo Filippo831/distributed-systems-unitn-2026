@@ -33,10 +33,11 @@ class PersonalTests {
     // =========================================================================
 
     /**
-     * The coordinator crashes while it is broadcasting the Update message of a
-     * write. The in-flight write may be lost: what MUST hold is that the system
-     * elects a new coordinator and remains fully available (write + read) for
-     * the following requests.
+     * The coordinator crashes while it is about to broadcast the Update message
+     * of a write. The target replica forwards the request to the coordinator, but
+     * the coordinator crashes before processing it and sending Updates. After
+     * election, the new coordinator receives the pending request via
+     * resendPendingUpdateRequests() and processes it.
      */
     @Test
     void coordinatorCrashDuringUpdateBroadcast() throws InterruptedException {
@@ -47,27 +48,36 @@ class PersonalTests {
         final TestsSystemWrapper sys = TestsCommons.createTestSystem(
                 "crashDuringUpdateBroadcast_" + COORDINATOR_ID, N_NODES, COORDINATOR_ID);
 
-        // Arm the crash config before issuing the write: the coordinator crashes
-        // right after it processes the first Ack of the 2PC — the Update broadcast
-        // is in flight but the quorum is not reached yet.
-        crash(sys, COORDINATOR_ID, Crash.Type.WriteOK, 1);
-
         ClientHandle firstClient = createClient(sys, "client", TARGET_REPLICA_ID);
+
+        // Send the write first so the target replica forwards it to the coordinator
         firstClient.client().tell(
                 new AbstractClient.WriteRequest(TestsCommons.TEST_INDEX, TestsCommons.TEST_VALUE),
                 Actor.noSender());
 
-        // The system must elect a new coordinator and resume normal operation.
+        // Give time for the target replica to forward the request to the coordinator
+        // and for the coordinator to receive it, but crash BEFORE it broadcasts Updates
+        Thread.sleep(50);
+
+        // Crash the coordinator immediately
+        crash(sys, COORDINATOR_ID);
+
+        // The system must elect a new coordinator
         awaitCoordinatorElected(sys, Collections.singleton(COORDINATOR_ID));
         Thread.sleep(TestsCommons.getMaxUpdateDelay(sys));
 
-        // The interrupted write is legitimately lost: the target acked its Update
-        // right before the coordinator died, so after the failover there is no
-        // pending request to resend and the originating client is never answered.
-        // (This is the "may be lost" case of the javadoc — the MUST-holds are the
-        // election and the availability of the system, checked below.)
+        // The pending UpdateRequest forwarded to the old coordinator is still in
+        // the forwarding replica's pendingUpdateRequests and will be resent by
+        // the new coordinator after election/sync
+        WriteResult firstWr = (WriteResult) firstClient.probe().fishForMessage(
+                Duration.ofMillis(TestsCommons.getElectionMaxDelay(sys) + TestsCommons.getMaxUpdateDelay(sys)),
+                "WriteResult",
+                m -> m instanceof WriteResult);
+        assertEquals(
+                new WriteResult(true, TestsCommons.TEST_INDEX, TestsCommons.TEST_VALUE, TARGET_REPLICA_ID),
+                firstWr);
 
-        // A fresh client (own probe) proves the system is available again.
+        // Prove availability after failover
         ClientHandle recoveryClient = createClient(sys, "recoveryClient", TARGET_REPLICA_ID);
         recoveryClient.client().tell(
                 new AbstractClient.WriteRequest(TestsCommons.TEST_INDEX, RECOVERY_VALUE),
