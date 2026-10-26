@@ -33,11 +33,10 @@ class PersonalTests {
     // =========================================================================
 
     /**
-     * The coordinator crashes while it is about to broadcast the Update message
-     * of a write. The target replica forwards the request to the coordinator, but
-     * the coordinator crashes before processing it and sending Updates. After
-     * election, the new coordinator receives the pending request via
-     * resendPendingUpdateRequests() and processes it.
+     * The coordinator crashes while broadcasting the Update message of a
+     * write. With crash hooks in broadcast(), we can crash the coordinator after
+     * sending N Update messages - if N < number of replicas, some replicas
+     * won't receive the Update and quorum won't be reached.
      */
     @Test
     void coordinatorCrashDuringUpdateBroadcast() throws InterruptedException {
@@ -50,17 +49,13 @@ class PersonalTests {
 
         ClientHandle firstClient = createClient(sys, "client", TARGET_REPLICA_ID);
 
-        // Send the write first so the target replica forwards it to the coordinator
+        // Arm crash before issuing write: coordinator crashes after sending 1 Update message
+        // (so only 1 replica receives Update, quorum not reached)
+        crash(sys, COORDINATOR_ID, Crash.Type.Update, 1);
+
         firstClient.client().tell(
                 new AbstractClient.WriteRequest(TestsCommons.TEST_INDEX, TestsCommons.TEST_VALUE),
                 Actor.noSender());
-
-        // Give time for the target replica to forward the request to the coordinator
-        // and for the coordinator to receive it, but crash BEFORE it broadcasts Updates
-        Thread.sleep(50);
-
-        // Crash the coordinator immediately
-        crash(sys, COORDINATOR_ID);
 
         // The system must elect a new coordinator
         awaitCoordinatorElected(sys, Collections.singleton(COORDINATOR_ID));

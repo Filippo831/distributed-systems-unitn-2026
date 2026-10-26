@@ -203,14 +203,6 @@ public class UpdateManager {
         Cancellable newTimer = replica.createTimer(new Messages.WriteOkTimeout(), replica.timerDuration);
 
         writeOkTimers.put(_msg.clock, newTimer);
-        if (replica.pendingCrash != null && replica.pendingCrash.type == Crash.Type.Update) {
-            replica.n_messages_of_type++;
-            if (replica.n_messages_of_type >= replica.pendingCrash.after_n_messages_of_type) {
-                replica.n_messages_of_type = 0;
-                replica.getContext().become(replica.createCrashedReceive());
-                return;
-            }
-        }
     }
 
     // coordinator: count Acks and commit in order once the quorum is reached
@@ -251,14 +243,6 @@ public class UpdateManager {
             }
         }
 
-        if (replica.pendingCrash != null && replica.pendingCrash.type == Crash.Type.WriteOK) {
-            replica.n_messages_of_type++;
-            if (replica.n_messages_of_type >= replica.pendingCrash.after_n_messages_of_type) {
-                replica.n_messages_of_type = 0;
-                replica.getContext().become(replica.createCrashedReceive());
-                return;
-            }
-        }
     }
 
     // replica: commit in order once the WriteOk for the oldest clock is received

@@ -198,6 +198,22 @@ public class Replica extends AbstractReplica {
         for (Map.Entry<Integer, ActorRef> entry : group.entrySet()) {
             if (entry.getKey() != this.id) {
                 sendTo((java.io.Serializable) message, entry.getValue());
+                // Check for crash during broadcast
+                if (message instanceof Messages.Update && pendingCrash != null && pendingCrash.type == Crash.Type.Update) {
+                    n_messages_of_type++;
+                    if (n_messages_of_type >= pendingCrash.after_n_messages_of_type) {
+                        n_messages_of_type = 0;
+                        getContext().become(createCrashedReceive());
+                        return;
+                    }
+                } else if (message instanceof Messages.WriteOk && pendingCrash != null && pendingCrash.type == Crash.Type.WriteOK) {
+                    n_messages_of_type++;
+                    if (n_messages_of_type >= pendingCrash.after_n_messages_of_type) {
+                        n_messages_of_type = 0;
+                        getContext().become(createCrashedReceive());
+                        return;
+                    }
+                }
             }
         }
     }
