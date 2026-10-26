@@ -296,6 +296,9 @@ public class UpdateManager {
         replica.commitHistory.put(clock, data);
         replica.storage[data.index] = data.value;
         replica.onUpdateApplied(data.index, data.value);
+
+        // ADDED: log
+        replica.logInfo("applied update " + clock.epoch + ":" + clock.seqNum + " (" + data.index + ", " + data.value + ")");
     }
 
     // notify the originating client (if it is one of this node's clients)
