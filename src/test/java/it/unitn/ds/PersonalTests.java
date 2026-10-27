@@ -33,15 +33,18 @@ class PersonalTests {
     // =========================================================================
 
     /**
-     * The coordinator crashes while broadcasting the Update message of a
-     * write. With crash hooks in broadcast(), we can crash the coordinator after
-     * sending N Update messages - if N < number of replicas, some replicas
-     * won't receive the Update and quorum won't be reached.
+     * Test 1 - crash during the broadcast of an UPDATE: The coordinator crashes
+     * while sending the Update messages. The coordinator is armed to crash after
+     * sending only 1 Update message, so fewer than a majority of replicas receive
+     * it and quorum is never reached. A new coordinator is elected, which will
+     * receive the pending requests (still in the forwarding replicas'
+     * pendingUpdateRequests) via resendPendingUpdateRequests() and process them
+     * so the original client receives its WriteResult.
      */
     @Test
     void coordinatorCrashDuringUpdateBroadcast() throws InterruptedException {
         final int COORDINATOR_ID = 0;
-        final int TARGET_REPLICA_ID = N_NODES - 1; // 6, never crashed
+        final int TARGET_REPLICA_ID = N_NODES - 1; // never crashed
         final int RECOVERY_VALUE = 20;
 
         final TestsSystemWrapper sys = TestsCommons.createTestSystem(
@@ -49,21 +52,20 @@ class PersonalTests {
 
         ClientHandle firstClient = createClient(sys, "client", TARGET_REPLICA_ID);
 
-        // Arm crash before issuing write: coordinator crashes after sending 1 Update message
-        // (so only 1 replica receives Update, quorum not reached)
+        // Arm crash before issuing the write: crash the coordinator after
+        // broadcasting to only 1 replica. With N=7, quorum is 4, so quorum is not reached.
         crash(sys, COORDINATOR_ID, Crash.Type.Update, 1);
 
         firstClient.client().tell(
                 new AbstractClient.WriteRequest(TestsCommons.TEST_INDEX, TestsCommons.TEST_VALUE),
                 Actor.noSender());
 
-        // The system must elect a new coordinator
+        // Election must occur
         awaitCoordinatorElected(sys, Collections.singleton(COORDINATOR_ID));
         Thread.sleep(TestsCommons.getMaxUpdateDelay(sys));
 
-        // The pending UpdateRequest forwarded to the old coordinator is still in
-        // the forwarding replica's pendingUpdateRequests and will be resent by
-        // the new coordinator after election/sync
+        // The forwarded UpdateRequest is still pending on replicas (never received Update)
+        // and will be resent by the new coordinator after election/sync
         WriteResult firstWr = (WriteResult) firstClient.probe().fishForMessage(
                 Duration.ofMillis(TestsCommons.getElectionMaxDelay(sys) + TestsCommons.getMaxUpdateDelay(sys)),
                 "WriteResult",

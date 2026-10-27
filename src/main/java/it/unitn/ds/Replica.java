@@ -40,9 +40,12 @@ public class Replica extends AbstractReplica {
     // replicas that are known to have crashed
     public Set<Integer> crashedReplicas = new HashSet<>();
 
+    // flag to tell if the replica crashed
+    private boolean crashed = false;
+
     public int timerDuration;
 
-    // Phase-specific deadlines.  They are initialized after the group is known
+    // Phase-specific deadlines. They are initialized after the group is known
     // because the group-size tolerance is part of each deadline.
     private long updateTimeoutDuration;
     private long writeOkTimeoutDuration;
@@ -50,7 +53,7 @@ public class Replica extends AbstractReplica {
     private long electionTimeoutDuration;
 
     private static final long PHASE_SCHEDULER_MARGIN_MS = 300L;
-    
+
     // keep track if there is a crash requested
     public Crash pendingCrash = null;
     public int n_messages_of_type = 0;
@@ -121,6 +124,8 @@ public class Replica extends AbstractReplica {
     }
 
     public void sendTo(java.io.Serializable m, ActorRef dst) {
+        if (crashed)
+            return;
         tell(m, dst);
     }
 
@@ -160,9 +165,13 @@ public class Replica extends AbstractReplica {
         return electionTimeoutDuration;
     }
 
+    public void crashNow() {
+        crashed = true;
+        getContext().become(createCrashedReceive());
+    }
 
     /**
-     * Computes a deadline for a complete protocol phase.  The current update
+     * Computes a deadline for a complete protocol phase. The current update
      * and WriteOk paths each have two network-channel hops: the request/ack
      * reaches the coordinator and the response/update returns from it.
      */
@@ -173,7 +182,6 @@ public class Replica extends AbstractReplica {
                 + groupTolerance
                 + PHASE_SCHEDULER_MARGIN_MS;
     }
-
 
     // Manager getters, used by the managers to cooperate (e.g. sync -> update)
     public UpdateManager updateManager() {
@@ -199,18 +207,20 @@ public class Replica extends AbstractReplica {
             if (entry.getKey() != this.id) {
                 sendTo((java.io.Serializable) message, entry.getValue());
                 // Check for crash during broadcast
-                if (message instanceof Messages.Update && pendingCrash != null && pendingCrash.type == Crash.Type.Update) {
+                if (message instanceof Messages.Update && pendingCrash != null
+                        && pendingCrash.type == Crash.Type.Update) {
                     n_messages_of_type++;
                     if (n_messages_of_type >= pendingCrash.after_n_messages_of_type) {
                         n_messages_of_type = 0;
-                        getContext().become(createCrashedReceive());
+                        crashNow();
                         return;
                     }
-                } else if (message instanceof Messages.WriteOk && pendingCrash != null && pendingCrash.type == Crash.Type.WriteOK) {
+                } else if (message instanceof Messages.WriteOk && pendingCrash != null
+                        && pendingCrash.type == Crash.Type.WriteOK) {
                     n_messages_of_type++;
                     if (n_messages_of_type >= pendingCrash.after_n_messages_of_type) {
                         n_messages_of_type = 0;
-                        getContext().become(createCrashedReceive());
+                        crashNow();
                         return;
                     }
                 }
@@ -260,7 +270,7 @@ public class Replica extends AbstractReplica {
             // this way it stops handling messages
             getContext().become(createCrashedReceive());
             return;
-        } 
+        }
         this.pendingCrash = how_to_crash;
         this.n_messages_of_type = 0;
     }
@@ -329,7 +339,7 @@ public class Replica extends AbstractReplica {
                 // ADDED: handle reads and writes
                 .match(Messages.ReadRequest.class, this::handleReadRequest)
                 .match(Messages.UpdateRequest.class, updateManager::handleUpdateRequest)
-                
+
                 // handle election messages, synch messages and acks
                 .match(Messages.Election.class, electionManager::handleElection)
                 .match(Messages.ElectionAck.class, electionManager::handleElectionAck)
@@ -339,7 +349,8 @@ public class Replica extends AbstractReplica {
                 .match(Messages.ElectionTimeout.class, electionManager::handleElectionTimeout)
                 .match(Messages.ElectionAckTimeout.class, electionManager::handleElectionAckTimeout)
 
-                //.match(Messages.UpdateSyncTimeout.class, syncManager::handleUpdateSyncTimeout)
+                // .match(Messages.UpdateSyncTimeout.class,
+                // syncManager::handleUpdateSyncTimeout)
                 .build();
     }
 
@@ -368,7 +379,6 @@ public class Replica extends AbstractReplica {
     public final void handleHeartbeatTimeout(Messages.HeartbeatTimeout _msg) {
         electionManager.startElection();
     }
-
 
     // =================================================================================
     // Public delegators preserved for external/test API

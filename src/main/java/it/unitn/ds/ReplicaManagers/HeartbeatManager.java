@@ -65,7 +65,7 @@ public class HeartbeatManager {
             replica.n_messages_of_type++;
             if (replica.n_messages_of_type >= replica.pendingCrash.after_n_messages_of_type) {
                 replica.n_messages_of_type = 0;
-                replica.getContext().become(replica.createCrashedReceive());
+                replica.crashNow();
                 return;
             }
         }
