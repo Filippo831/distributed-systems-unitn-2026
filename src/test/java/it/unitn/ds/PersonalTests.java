@@ -96,11 +96,15 @@ class PersonalTests {
     }
 
     /**
-     * The coordinator commits a write (quorum of Acks reached) and crashes while
-     * the WriteOk messages are being disseminated. The system must elect a new
-     * coordinator. The original client must eventually receive the WriteResult
-     * for its write (via post-crash synchronization), and the system must stay
-     * available for the following write/read.
+     * Test 2 - crash during the dissemination of WRITEOK messages: The
+     * coordinator commits a write (quorum of Acks reached) and crashes while
+     * sending the WriteOk messages. With crash hooks in broadcast(), the
+     * coordinator is armed to crash after sending the 3rd WriteOk message
+     * during dissemination. An election starts, and the new coordinator (which
+     * will have the most up-to-date state) will send its state to all replicas
+     * via synchronization. Therefore, even if a replica didn't receive the
+     * WriteOk message, it will still make the change persistent. The original
+     * client must eventually receive the WriteResult for its write.
      */
     @Test
     void coordinatorCrashDuringWriteOkDissemination() throws InterruptedException {
@@ -113,11 +117,10 @@ class PersonalTests {
 
         ClientHandle firstClient = createClient(sys, "client", TARGET_REPLICA_ID);
 
-        // Arm the crash config before issuing the write: the coordinator crashes
-        // right after it processes the quorum-reaching Ack. The commit and the
-        // WriteOk broadcast happen first (same handler), then the crash fires while
-        // the WriteOk dissemination is still in flight. With 7 nodes the quorum is
-        // 4 (coordinator + 3 Acks), so the 3rd Ack triggers the crash.
+        // Arm the crash config before issuing the write: crash the coordinator
+        // after sending the 3rd WriteOk message during WriteOk dissemination.
+        // With N=7, quorum is 4, so the write will be committed and WriteOk
+        // broadcast will start before the crash.
         crash(sys, COORDINATOR_ID, Crash.Type.WriteOK, 3);
 
         firstClient.client().tell(
@@ -257,10 +260,14 @@ class PersonalTests {
     // }
 
     /**
-     * A replica crashes while the coordinator election is in progress (after the
-     * coordinator crash triggered it). The ring election and the synchronization
-     * must tolerate the extra crash and still converge on a coordinator, after
-     * which the system is available again.
+     * Test 3 - crash while the coordinator election is in progress: The
+     * coordinator crashes triggering an election. During the ring election,
+     * replica 2 crashes the moment it processes an Election message. The
+     * preceding replica will fire an ElectionAckTimeout when trying to reach
+     * the crashed replica, add it to crashedReplicas and skip it in the ring
+     * topology. The election must still complete among the surviving replicas
+     * and converge on a new coordinator, after which the system is available
+     * again.
      */
     @Test
     void replicaCrashDuringCoordinatorElection() throws InterruptedException {
@@ -307,12 +314,12 @@ class PersonalTests {
     // Preexisting tests (kept as-is, only the invalid ActorSystem name was fixed)
     // =========================================================================
 
-    @ParameterizedTest(name = "some non-coordinator replicas crash, client writes, waits and reads => coordinator {0}, nodes {1}")
+    @ParameterizedTest(name = "coordinator crashes after write request, client waits for failover => coordinator {0}, nodes {1}")
     @CsvSource({
             "7",
             "22",
     })
-    void crashDuringUpdateBroadcast(int n_nodes) throws InterruptedException {
+    void coordinatorCrashAfterWrite(int n_nodes) throws InterruptedException {
         final int COORDINATOR_ID = 0;
         final TestsSystemWrapper sys = TestsCommons
                 .createTestSystem("crashDuringUpdateBroadcast_" + COORDINATOR_ID, n_nodes,

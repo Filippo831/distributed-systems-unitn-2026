@@ -202,6 +202,15 @@ public class UpdateManager {
         // message, so the writeOkTimer is started
         Cancellable newTimer = replica.createTimer(new Messages.WriteOkTimeout(), replica.timerDuration);
 
+        if (replica.pendingCrash != null && replica.pendingCrash.type == Crash.Type.Update) {
+            replica.n_messages_of_type++;
+            if (replica.n_messages_of_type >= replica.pendingCrash.after_n_messages_of_type) {
+                replica.n_messages_of_type = 0;
+                replica.crashNow();
+                return;
+            }
+        }
+
         writeOkTimers.put(_msg.clock, newTimer);
     }
 

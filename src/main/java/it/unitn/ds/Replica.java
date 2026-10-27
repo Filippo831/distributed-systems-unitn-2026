@@ -253,7 +253,7 @@ public class Replica extends AbstractReplica {
     private final void handleReadRequest(Messages.ReadRequest _msg) {
         int value = storage[_msg.index];
 
-        tell(new AbstractClient.ReadResult(true, _msg.index, value, this.id), _msg.client);
+        sendTo((java.io.Serializable) new AbstractClient.ReadResult(true, _msg.index, value, this.id), _msg.client);
     }
 
     @Override
@@ -268,7 +268,7 @@ public class Replica extends AbstractReplica {
             // this is done by changing the node behaviour using the "message filter"
             // defined in createCrashedReceive
             // this way it stops handling messages
-            getContext().become(createCrashedReceive());
+            crashNow();
             return;
         }
         this.pendingCrash = how_to_crash;
