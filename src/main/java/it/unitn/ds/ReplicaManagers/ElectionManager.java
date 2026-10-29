@@ -90,7 +90,7 @@ public class ElectionManager {
 
     // get ID associated to the most recent update
     public int getBestId(Messages.Election _msg) {
-        int bestId = Integer.MIN_VALUE;
+        int bestId = Integer.MAX_VALUE;
         Messages.NodeClock bestClock = new Messages.NodeClock(Integer.MIN_VALUE, Integer.MIN_VALUE);
 
         // cycle on map entries
@@ -103,7 +103,7 @@ public class ElectionManager {
                     bestId = entry.getKey();
                 }
                 // if there is a tie, get highest ID
-                else if (entry.getValue().compareTo(bestClock) == 0 && entry.getKey() > bestId) {
+                else if (entry.getValue().compareTo(bestClock) == 0 && entry.getKey() < bestId) {
                     bestClock = entry.getValue();
                     bestId = entry.getKey();
                 }
