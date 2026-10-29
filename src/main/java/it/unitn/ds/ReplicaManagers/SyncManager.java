@@ -9,8 +9,7 @@ import it.unitn.ds.Replica;
 
 /**
  * Handles the post-election synchronization: the new coordinator brings the
- * other replicas
- * up-to-date with its own update history by propagating it via
+ * other replicas up-to-date with its own update history by propagating it via
  * Synchronization messages.
  */
 public class SyncManager {
@@ -23,9 +22,6 @@ public class SyncManager {
     // this node was elected as the new coordinator: it now will bring all replicas
     // up-to-date
     public void startSynchronization() {
-        // clean variables
-        // completeHistory.clear();
-
         replica.debugInfo("Replica " + replica.getId() + " elected coordinator starts synchronization phase");
 
         // cleanup of timers
@@ -48,8 +44,7 @@ public class SyncManager {
             replica.seqNum = 0;
 
             // build synchronization message with the id of the new coordinator and the
-            // complete update history
-            // ADDED epoch to synch message
+            // complete update history + epoch to synch
             Messages.Synchronization synchMsg = new Messages.Synchronization(replica.getId(), completeHistory,
                     replica.epoch);
 
@@ -65,7 +60,7 @@ public class SyncManager {
             }
 
             // allow coordinator to commit what's left
-            // put it here, after broadcast of the synch message, so in each coord-replica
+            // here, after broadcast of the synch message, so in each coord-replica
             // channel we have synch message before every other message
             this.handleSynchronization(synchMsg);
 
@@ -84,11 +79,11 @@ public class SyncManager {
             replica.coordinatorId = _msg.newCoordId;
             replica.onCoordinatorElected(_msg.newCoordId);
 
-            // ADDED: new epoch
+            // new epoch
             replica.epoch = _msg.newEpoch;
         }
 
-        // get up to date with updates -> these still have clock in the old view
+        // get up to date with updates -> note: these still have clock in the old view
         for (Map.Entry<Messages.NodeClock, Messages.UpdateData> entry : _msg.coordHistory.entrySet()) {
             Messages.NodeClock clock = entry.getKey();
             Messages.UpdateData data = entry.getValue();
@@ -96,14 +91,10 @@ public class SyncManager {
             // check history against most up to date history (from coordinator)
             if (!replica.commitHistory.containsKey(clock)) {
                 // if the node is missing some updates apply them
-                // replica.storage[data.index] = data.value;
-                // replica.commitHistory.put(clock, data);
-                // replica.onUpdateApplied(data.index, data.value);
-
-                // ADDED: use commitToStorage function directly (also logs)
+                // use commitToStorage function directly (also logs)
                 replica.updateManager().commitToStorage(clock, data);
 
-                // Changed: notify client
+                // notify client
                 replica.updateManager().notifyClient(clock);
             }
         }
@@ -123,7 +114,7 @@ public class SyncManager {
             replica.heartbeatManager().startCoordinatorHeartbeat();
         }
 
-        // these will have a clock in the new view
+        // resend pending updates -> these will have a clock in the new view
         replica.updateManager().resendPendingUpdateRequests();
     }
 

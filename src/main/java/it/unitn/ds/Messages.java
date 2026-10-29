@@ -195,7 +195,7 @@ public class Messages {
         // to date before starting the new epoch
         public final Map<Messages.NodeClock, Messages.UpdateData> coordHistory;
 
-        // ADDED: pass new epoch to align replicas
+        // pass new epoch to align replicas
         public final int newEpoch;
 
         public Synchronization(int newCoordId, Map<NodeClock, UpdateData> coordHistory, int newEpoch) {

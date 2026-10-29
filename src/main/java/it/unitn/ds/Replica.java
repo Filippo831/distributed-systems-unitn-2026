@@ -337,7 +337,7 @@ public class Replica extends AbstractReplica {
     // we want to handle only the election messages, ignoring updates
     public final Receive createElectionReceive() {
         return createBaseReceiveBuilder()
-                // ADDED: handle reads and writes
+                // handle reads (served) and writes (only saved in pendingUpdateRequests)
                 .match(Messages.ReadRequest.class, this::handleReadRequest)
                 .match(Messages.UpdateRequest.class, updateManager::handleUpdateRequest)
 

@@ -99,7 +99,7 @@ public class UpdateManager {
                 requestId = _msg.id;
             }
 
-            // ADDED: requestId to updateData
+            // add requestId to updateData
             Messages.UpdateData updateData = new Messages.UpdateData(_msg.index, _msg.value, requestId);
 
             updateClients.put(new Messages.NodeClock(replica.epoch, replica.seqNum), _msg.client);
@@ -181,7 +181,7 @@ public class UpdateManager {
         pendingUpdateRequests.remove(_msg.id);
 
         // get node clock assigned by coordinator _msg.clock
-        // ADDED: _msg.id (requestId)
+        // _msg.id (requestId)
         replica.toCommitQueue.put(_msg.clock, new Messages.UpdateData(_msg.index, _msg.value, _msg.id));
 
         updateClients.put(_msg.clock, _msg.client);
@@ -201,6 +201,7 @@ public class UpdateManager {
         // when the node sends ACK to the coordinator it starts waiting for the WriteOk
         // message, so the writeOkTimer is started
         Cancellable newTimer = replica.createTimer(new Messages.WriteOkTimeout(), replica.timerDuration);
+        writeOkTimers.put(_msg.clock, newTimer);
 
         if (replica.pendingCrash != null && replica.pendingCrash.type == Crash.Type.Update) {
             replica.n_messages_of_type++;
@@ -209,9 +210,7 @@ public class UpdateManager {
                 replica.crashNow();
                 return;
             }
-        }
-
-        writeOkTimers.put(_msg.clock, newTimer);
+        } 
     }
 
     // coordinator: count Acks and commit in order once the quorum is reached
@@ -290,7 +289,7 @@ public class UpdateManager {
         replica.storage[data.index] = data.value;
         replica.onUpdateApplied(data.index, data.value);
 
-        // ADDED: log
+        // log applied update
         replica.logInfo("applied update " + clock.epoch + ":" + clock.seqNum + " (" + data.index + ", " + data.value + ")");
     }
 
@@ -319,7 +318,7 @@ public class UpdateManager {
         // isCoord tells us if the node is the coordinator or another replica
         boolean isCoord = (replica.getId() == replica.coordinatorId);
 
-        // ADDED: some pending requests may have been completed in the synch phase, but
+        // some pending requests may have been completed in the synch phase, but
         // still present in pendingUpdateRequests
         // extract them to remove them and avoid repeated write request
         Map<String, Messages.UpdateData> completedPendings = new HashMap<>();
@@ -329,7 +328,7 @@ public class UpdateManager {
         }
 
         for (Map.Entry<String, Messages.UpdateRequest> entry : new LinkedHashMap<>(pendingUpdateRequests).entrySet()) {
-            // ADDED: check whether tha request was already committed during the synch phase
+            // check whether tha request was already committed during the synch phase
             // if it was then remove it from the pendingUpdateRequests and notify the client
             if (completedPendings.containsKey(entry.getKey())) { // entry.getKey() = requestId
                 Messages.UpdateData completedPendingData = completedPendings.get(entry.getKey());
