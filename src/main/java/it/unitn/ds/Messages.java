@@ -161,6 +161,8 @@ public class Messages {
         // id of the node that started this election
         public final int starterId;
         public final int electionEpoch;
+
+        // starter replica's replica.epoch at election start
         public final int nodeEndingEpoch;
 
         public Election(int _starterId, int _electionEpoch, int _nodeEndingEpoch, Map<Integer, NodeClock> candidates) {
