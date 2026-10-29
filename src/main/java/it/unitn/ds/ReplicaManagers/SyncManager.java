@@ -89,9 +89,12 @@ public class SyncManager {
             // check history against most up to date history (from coordinator)
             if (!replica.commitHistory.containsKey(clock)) {
                 // if the node is missing some updates apply them
-                replica.storage[data.index] = data.value;
-                replica.commitHistory.put(clock, data);
-                replica.onUpdateApplied(data.index, data.value);
+                // replica.storage[data.index] = data.value;
+                // replica.commitHistory.put(clock, data);
+                // replica.onUpdateApplied(data.index, data.value);
+
+                // ADDED: use commitToStorage function directly (also logs)
+                 replica.updateManager().commitToStorage(clock, data);
 
                 // Changed: notify client
                 replica.updateManager().notifyClient(clock);

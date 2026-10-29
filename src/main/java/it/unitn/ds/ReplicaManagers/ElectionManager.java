@@ -42,7 +42,7 @@ public class ElectionManager {
     private int electionStarterId = -1;
 
     // track outstanding election ack
-    private int outstandingAckNode = -1;
+    //private int outstandingAckNode = -1;
     private int outstandingAckEpoch = -1;
     private int outstandingAckStarterId = -1;
 
@@ -389,7 +389,7 @@ public class ElectionManager {
             electionTimer.cancel();
         if (electionAckTimer != null)
             electionAckTimer.cancel();
-        outstandingAckNode = -1;
+        //outstandingAckNode = -1;
         outstandingAckEpoch = -1;
         outstandingAckStarterId = -1;
     }
@@ -398,7 +398,7 @@ public class ElectionManager {
         if (electionAckTimer != null) {
             electionAckTimer.cancel();
         }
-        outstandingAckNode = nextNodeId;
+        //outstandingAckNode = nextNodeId;
         outstandingAckEpoch = this.electionEpoch;
         outstandingAckStarterId = this.electionStarterId;
         electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.getElectionAckTimeoutDuration());

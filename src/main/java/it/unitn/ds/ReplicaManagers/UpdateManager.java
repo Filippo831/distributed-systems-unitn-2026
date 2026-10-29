@@ -285,7 +285,7 @@ public class UpdateManager {
     }
 
     // persist an update on the local storage and trigger the callback
-    private void commitToStorage(Messages.NodeClock clock, Messages.UpdateData data) {
+    public void commitToStorage(Messages.NodeClock clock, Messages.UpdateData data) {
         replica.commitHistory.put(clock, data);
         replica.storage[data.index] = data.value;
         replica.onUpdateApplied(data.index, data.value);
