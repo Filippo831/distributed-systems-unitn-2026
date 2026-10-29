@@ -8,36 +8,38 @@ import it.unitn.ds.Messages;
 import it.unitn.ds.Replica;
 
 /**
- * Handles the post-election synchronization: the new coordinator brings the other replicas 
+ * Handles the post-election synchronization: the new coordinator brings the
+ * other replicas
  * up-to-date with its own update history by propagating it via
  * Synchronization messages.
  */
 public class SyncManager {
     private final Replica replica;
 
-
     public SyncManager(Replica _replica) {
         this.replica = _replica;
     }
 
-    // this node was elected as the new coordinator: it now will bring all replicas up-to-date
+    // this node was elected as the new coordinator: it now will bring all replicas
+    // up-to-date
     public void startSynchronization() {
         // clean variables
-        //completeHistory.clear();
+        // completeHistory.clear();
 
         replica.debugInfo("Replica " + replica.getId() + " elected coordinator starts synchronization phase");
 
         // cleanup of timers
         replica.cancelAllTimers();
 
-        try{
+        try {
             // elect as coordinator
             replica.coordinatorId = replica.getId();
 
             // callback on election
             replica.onCoordinatorElected(replica.coordinatorId);
 
-            // build complete history from commited and to commit updates of the new coordinator (most up-to-date replica)
+            // build complete history from commited and to commit updates of the new
+            // coordinator (most up-to-date replica)
             Map<Messages.NodeClock, Messages.UpdateData> completeHistory = new TreeMap<>(replica.commitHistory);
             completeHistory.putAll(replica.toCommitQueue);
 
@@ -45,14 +47,17 @@ public class SyncManager {
             replica.epoch++;
             replica.seqNum = 0;
 
-            // build synchronization message with the id of the new coordinator and the complete update history
+            // build synchronization message with the id of the new coordinator and the
+            // complete update history
             // ADDED epoch to synch message
-            Messages.Synchronization synchMsg = new Messages.Synchronization(replica.getId(), completeHistory, replica.epoch);
+            Messages.Synchronization synchMsg = new Messages.Synchronization(replica.getId(), completeHistory,
+                    replica.epoch);
 
             // return to NORMAL state
             replica.actorContext().become(replica.createReceive());
 
-            // send synchronization message in broadcast to the other replicas to bring them up-to-date
+            // send synchronization message in broadcast to the other replicas to bring them
+            // up-to-date
             for (Map.Entry<Integer, ActorRef> node : replica.group.entrySet()) {
                 if (!replica.crashedReplicas.contains(node.getKey()) && node.getKey() != replica.getId()) {
                     replica.sendTo((java.io.Serializable) synchMsg, node.getValue());
@@ -60,7 +65,8 @@ public class SyncManager {
             }
 
             // allow coordinator to commit what's left
-            // put it here, after broadcast of the synch message, so in each coord-replica channel we have synch message before every other message
+            // put it here, after broadcast of the synch message, so in each coord-replica
+            // channel we have synch message before every other message
             this.handleSynchronization(synchMsg);
 
         } catch (Exception ex) {
@@ -68,8 +74,9 @@ public class SyncManager {
         }
     }
 
-    // this function brings all replicas up to date with the updates 
-    // it is called also by the coordinator itself to commit what was left in the toCommitQueue before the election
+    // this function brings all replicas up to date with the updates
+    // it is called also by the coordinator itself to commit what was left in the
+    // toCommitQueue before the election
     public void handleSynchronization(Messages.Synchronization _msg) throws Exception {
         // set new coordinator and epoch
         if (replica.coordinatorId != _msg.newCoordId) {
@@ -94,7 +101,7 @@ public class SyncManager {
                 // replica.onUpdateApplied(data.index, data.value);
 
                 // ADDED: use commitToStorage function directly (also logs)
-                 replica.updateManager().commitToStorage(clock, data);
+                replica.updateManager().commitToStorage(clock, data);
 
                 // Changed: notify client
                 replica.updateManager().notifyClient(clock);

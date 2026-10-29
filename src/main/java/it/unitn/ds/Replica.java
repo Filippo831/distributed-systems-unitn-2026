@@ -167,7 +167,7 @@ public class Replica extends AbstractReplica {
 
     public void crashNow() {
         crashed = true;
-        // log("CRASHED: " + pendingCrash.type + " (" + n_messages_of_type + ")");
+        log("Crashing now");
         getContext().become(createCrashedReceive());
     }
 
