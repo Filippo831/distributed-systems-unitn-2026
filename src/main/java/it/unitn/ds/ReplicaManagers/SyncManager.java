@@ -49,7 +49,7 @@ public class SyncManager {
 
             // build synchronization message with the id of the new coordinator and the
             // complete update history
-            // ADDED epoch to synch message
+            // epoch to synch message
             Messages.Synchronization synchMsg = new Messages.Synchronization(replica.getId(), completeHistory,
                     replica.epoch);
 
@@ -84,7 +84,7 @@ public class SyncManager {
             replica.coordinatorId = _msg.newCoordId;
             replica.onCoordinatorElected(_msg.newCoordId);
 
-            // ADDED: new epoch
+            // new epoch
             replica.epoch = _msg.newEpoch;
         }
 
@@ -100,7 +100,7 @@ public class SyncManager {
                 // replica.commitHistory.put(clock, data);
                 // replica.onUpdateApplied(data.index, data.value);
 
-                // ADDED: use commitToStorage function directly (also logs)
+                // use commitToStorage function directly (also logs)
                 replica.updateManager().commitToStorage(clock, data);
 
                 // Changed: notify client

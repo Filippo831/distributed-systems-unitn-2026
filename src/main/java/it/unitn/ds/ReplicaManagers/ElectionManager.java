@@ -29,12 +29,13 @@ public class ElectionManager {
     // for the end of the election protocol
     private Cancellable electionTimer = null;
 
-    // varibale to know if the replica is in election
+    // variable to know if the replica is in election
     private boolean inElection = false;
 
     private int nextNodeId;
 
-    // epoch of the election round this replica is in, the highest (newer) election epoch wins
+    // epoch of the election round this replica is in, the highest (newer) election
+    // epoch wins
     private int electionEpoch = -1;
 
     // keep track of the lowest election id initiator
@@ -42,7 +43,7 @@ public class ElectionManager {
     private int electionStarterId = -1;
 
     // track outstanding election ack
-    //private int outstandingAckNode = -1;
+    // private int outstandingAckNode = -1;
     private int outstandingAckEpoch = -1;
     private int outstandingAckStarterId = -1;
 
@@ -128,8 +129,8 @@ public class ElectionManager {
         if (replica.coordinatorId != -1) {
             replica.crashedReplicas.add(replica.coordinatorId);
         }
-        
-        // ADDED: set coordinatorId at -1 as done in startElectionProtocol
+
+        // set coordinatorId at -1 as done in startElectionProtocol
         replica.coordinatorId = -1;
 
         // this is done by changing the node behaviour using the "message filter"
@@ -140,7 +141,6 @@ public class ElectionManager {
         // cancel all timers, not needed anymore
         replica.cancelAllTimers();
 
-        // ADDED
         armElectionTimer();
     }
 
@@ -185,7 +185,8 @@ public class ElectionManager {
                         " electionEpoch=" + _msg.electionEpoch +
                         " candidates=" + _msg.candidates.keySet());
 
-        // this allows a replica to ignore election message with lower node epoch (not election epoch)
+        // this allows a replica to ignore election message with lower node epoch (not
+        // election epoch)
         // basically acts as a guard against late election messages
         if (_msg.nodeEndingEpoch < replica.epoch) {
             replica.debugInfo(
@@ -193,34 +194,39 @@ public class ElectionManager {
                             " ignoring election message with lower node epoch " + _msg.nodeEndingEpoch +
                             " than current epoch " + replica.epoch);
             // still need to ACK sender so it knows this node is alive
-            replica.sendTo((java.io.Serializable) new Messages.ElectionAck(_msg.electionEpoch, _msg.starterId), replica.getSenderRef());
+            replica.sendTo((java.io.Serializable) new Messages.ElectionAck(_msg.electionEpoch, _msg.starterId),
+                    replica.getSenderRef());
             return;
         }
 
-        // ADDED: save wheter the node was already in election or it's the first election message it receives (still in NORMAL)
+        // save whether the node was already in election or it's the first election
+        // message it receives (still in NORMAL)
         boolean wasInElection = inElection;
 
-        // ADDED: if node still in NORMAL state, enter ELECTION state
+        // if node still in NORMAL state, enter ELECTION state
         if (!wasInElection) {
             enterElectionState();
         }
-        
-        // ADDED: if the node was already in election we consider this part (filtering)
-        // otherwise just consider this election message in all cases as it is the first one it sees
+
+        // if the node was already in election we consider this part (filtering)
+        // otherwise just consider this election message in all cases as it is the first
+        // one it sees
         if (wasInElection) {
             // this allows a replica to ignore election message with lower election epoch
-            // this allows to ignore old election messages in case a newer election was started (e.g. due to electionTimer expiration)
+            // this allows to ignore old election messages in case a newer election was
+            // started (e.g. due to electionTimer expiration)
             if (_msg.electionEpoch < this.electionEpoch) {
                 replica.debugInfo(
                         "Replica " + replica.getId() +
                                 " ignoring election message with lower election epoch " + _msg.electionEpoch +
                                 " than current epoch " + this.electionEpoch);
                 // still need to ACK sender so it knows this node is alive
-                replica.sendTo((java.io.Serializable) new Messages.ElectionAck(_msg.electionEpoch, _msg.starterId), replica.getSenderRef());
+                replica.sendTo((java.io.Serializable) new Messages.ElectionAck(_msg.electionEpoch, _msg.starterId),
+                        replica.getSenderRef());
                 return;
             }
 
-            // if the election epoch of the message is equal 
+            // if the election epoch of the message is equal
             // but the starter id is higher than the current one, ignore it
             else if (_msg.electionEpoch == this.electionEpoch && _msg.starterId > this.electionStarterId) {
                 replica.debugInfo(
@@ -229,37 +235,45 @@ public class ElectionManager {
                                 " but higher starter id " + _msg.starterId +
                                 " than current starter id " + this.electionStarterId);
                 // still need to ACK sender so it knows this node is alive
-                replica.sendTo((java.io.Serializable) new Messages.ElectionAck(_msg.electionEpoch, _msg.starterId), replica.getSenderRef());
+                replica.sendTo((java.io.Serializable) new Messages.ElectionAck(_msg.electionEpoch, _msg.starterId),
+                        replica.getSenderRef());
                 return;
             }
         }
-        
-        // election message is accepted: either first election message seen, current election or a new election with higher priority
-        
-        // ADDED: check if election state changed
+
+        // election message is accepted: either first election message seen, current
+        // election or a new election with higher priority
+
+        // check if election state changed
         boolean electionChanged = _msg.electionEpoch != this.electionEpoch || _msg.starterId != this.electionStarterId;
 
-        // save the election message content (candidates map changes every time) 
+        // save the election message content (candidates map changes every time)
         this.election = _msg;
 
-        // ADDED: only if the election state changed
+        // only if the election state changed
         if (electionChanged) {
             this.electionEpoch = _msg.electionEpoch;
             this.electionStarterId = _msg.starterId;
 
-            // ADDED: if the replica adopts a new election (electionEpoch or electionStarterId is different) then re-arm the timer 
-            // - give the new "winning" election a try, without this in case of electionTimer expiration a new election is considered 
-            // but the replicas still have the timer of the old election armed, leading to the cascading expiration of the older timers
-            // - if the same election is looping electionChanged would be false and the timer would expire!
+            // if the replica adopts a new election (electionEpoch or electionStarterId is
+            // different) then re-arm the timer
+            // - give the new "winning" election a try, without this in case of
+            // electionTimer expiration a new election is considered
+            // but the replicas still have the timer of the old election armed, leading to
+            // the cascading expiration of the older timers
+            // - if the same election is looping electionChanged would be false and the
+            // timer would expire!
             if (wasInElection) {
                 armElectionTimer();
             }
         }
 
         // ack sender
-        replica.sendTo((java.io.Serializable) new Messages.ElectionAck(_msg.electionEpoch, _msg.starterId), replica.getSenderRef());
+        replica.sendTo((java.io.Serializable) new Messages.ElectionAck(_msg.electionEpoch, _msg.starterId),
+                replica.getSenderRef());
 
-        // if the message contains my ID, that means it cycled back to me (travelled along all nodes)
+        // if the message contains my ID, that means it cycled back to me (travelled
+        // along all nodes)
         // otherwise, i never saw it and need to add myself as a candidate
         if (!_msg.candidates.containsKey(replica.getId())) {
             // add own data to the election message -> append node id and last seen message
@@ -295,7 +309,7 @@ public class ElectionManager {
                 replica.sendTo((java.io.Serializable) this.election, nextNode);
 
                 // create a timer
-               armElectionAckTimer();
+                armElectionAckTimer();
             }
         }
 
@@ -333,7 +347,8 @@ public class ElectionManager {
     }
 
     public void handleElectionAck(Messages.ElectionAck _msg) throws Exception {
-        // Only cancel if this ACK matches the current outstanding request (ignore stale ACKs)
+        // Only cancel if this ACK matches the current outstanding request (ignore stale
+        // ACKs)
         if (electionAckTimer != null &&
                 _msg.electionEpoch == outstandingAckEpoch &&
                 _msg.starterId == outstandingAckStarterId) {
@@ -348,8 +363,8 @@ public class ElectionManager {
                 "Election timeout on replica " + replica.getId());
         this.electionEpoch += 1;
 
-        // ADDED: re-arm election timer 
-       armElectionTimer();
+        // re-arm election timer
+        armElectionTimer();
 
         // re-start election protocol
         startElectionProtocol();
@@ -359,14 +374,17 @@ public class ElectionManager {
         replica.debugInfo(
                 "Election ACK timeout on replica " + replica.getId() +
                         " waiting for ACK from " + nextNodeId);
-        
+
         // ACK to an election message was not received, add node to crashedReplicas
         replica.crashedReplicas.add(nextNodeId);
-        
-        // ADDED: remove crashed node from the election (important because crashed could be the best and still be considered... message will loop until electionTimer expires)
+
+        // remove crashed node from the election (important because crashed could be the
+        // best and still be considered... message will loop until electionTimer
+        // expires)
         Map<Integer, Messages.NodeClock> candidates = new HashMap<>(election.candidates);
-        candidates.remove(nextNodeId); 
-        election = new Messages.Election(election.starterId, election.electionEpoch, election.nodeEndingEpoch, candidates);
+        candidates.remove(nextNodeId);
+        election = new Messages.Election(election.starterId, election.electionEpoch, election.nodeEndingEpoch,
+                candidates);
 
         // retry now
         // forward message to next node in the ring (now skipping the crashed one)
@@ -389,7 +407,7 @@ public class ElectionManager {
             electionTimer.cancel();
         if (electionAckTimer != null)
             electionAckTimer.cancel();
-        //outstandingAckNode = -1;
+        // outstandingAckNode = -1;
         outstandingAckEpoch = -1;
         outstandingAckStarterId = -1;
     }
@@ -398,15 +416,16 @@ public class ElectionManager {
         if (electionAckTimer != null) {
             electionAckTimer.cancel();
         }
-        //outstandingAckNode = nextNodeId;
+        // outstandingAckNode = nextNodeId;
         outstandingAckEpoch = this.electionEpoch;
         outstandingAckStarterId = this.electionStarterId;
-        electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(), replica.getElectionAckTimeoutDuration());
+        electionAckTimer = replica.createTimer(new Messages.ElectionAckTimeout(),
+                replica.getElectionAckTimeoutDuration());
     }
 
-    // ADDED armElectionTimer
     private void armElectionTimer() {
-        if (electionTimer != null) electionTimer.cancel();
+        if (electionTimer != null)
+            electionTimer.cancel();
         electionTimer = replica.createTimer(new Messages.ElectionTimeout(), replica.getElectionTimeoutDuration());
     }
 
